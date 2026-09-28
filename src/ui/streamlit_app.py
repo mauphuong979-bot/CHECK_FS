@@ -204,9 +204,22 @@ def _apply_compact_styles() -> None:
         [data-testid="stVerticalBlock"] {
             gap: 0.65rem;
         }
-        #MainMenu {visibility: hidden;}
-        footer {visibility: hidden;}
-        [data-testid="stHeader"] {background: transparent;}
+        header,
+        [data-testid="stHeader"],
+        [data-testid="stToolbar"],
+        [data-testid="stToolbarActions"],
+        [data-testid="stHeaderNav"],
+        .stAppHeader,
+        .stAppToolbar,
+        #MainMenu,
+        footer,
+        a[href*="github.com"] {
+            visibility: hidden !important;
+            display: none !important;
+            height: 0 !important;
+            margin: 0 !important;
+            padding: 0 !important;
+        }
         [data-testid="stSidebar"] {
             background-color: #F8FAFC;
         }
