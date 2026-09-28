@@ -1,6 +1,6 @@
 [client]
 showErrorDetails = false
-toolbarMode = "off"
+toolbarMode = "minimal"
 
 [browser]
 gatherUsageStats = false

@@ -354,7 +354,6 @@ def _init_session_state() -> None:
         "applied_rule_pack": None,
         "processed_filename": "",
         "processed_file_fingerprint": "",
-        "auto_process_after_upload": True,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
