@@ -246,7 +246,10 @@ class WordCommentTargetTest(unittest.TestCase):
         )
 
         self.assertEqual(len(targets), 1)
-        self.assertEqual(targets[0].message, "Đối chiếu TM–BCTC: Có chênh lệch.")
+        self.assertEqual(
+            targets[0].message,
+            "Đối chiếu TM–BCTC (Cần xem xét): Phát hiện số liệu nghi vấn chưa khớp giữa TM và BCTC. Đề nghị kiểm toán viên kiểm tra lại cấu trúc Thuyết minh.",
+        )
 
     def test_standard_note_reconciliation_comment_includes_difference_amount(self):
         table = ExtractedTable(
@@ -274,7 +277,7 @@ class WordCommentTargetTest(unittest.TestCase):
         self.assertEqual(len(targets), 1)
         self.assertEqual(
             targets[0].message,
-            "Đối chiếu TM–BCTC: Có chênh lệch 8 VND.",
+            "Đối chiếu TM–BCTC (Cần xem xét): Phát hiện số liệu nghi vấn chưa khớp giữa TM và BCTC (chênh lệch 8 VND). Đề nghị kiểm toán viên kiểm tra lại cấu trúc Thuyết minh.",
         )
 
     def test_skips_unlinked_note_without_statement_target(self):

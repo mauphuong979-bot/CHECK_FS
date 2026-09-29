@@ -284,9 +284,15 @@ def _reconcile_equity_movement_table(
     )
     prior_closing_row = _equity_row(
         note_table,
-        lambda label: "so cuoi nam truoc" in label and "dau nam nay" in label,
+        lambda label: (
+            ("so cuoi nam truoc" in label and "dau nam nay" in label)
+            or label in ("so cuoi nam truoc", "so dau nam nay", "so cuoi ky truoc")
+        ),
     )
-    closing_row = _equity_row(note_table, lambda label: label == "so cuoi nam")
+    closing_row = _equity_row(
+        note_table,
+        lambda label: any(kw in label for kw in ("so cuoi nam", "so cuoi ky", "so du cuoi nam", "so du cuoi ky")) and "truoc" not in label,
+    )
     if (
         capital_col is None
         or retained_earnings_col is None

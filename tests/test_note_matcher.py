@@ -946,20 +946,37 @@ class NoteMatcherTest(unittest.TestCase):
         self.assertEqual(result.note_prior, Decimal("529677417162"))
         self.assertEqual(len(reconcile_note_tables([statement, note])), 1)
 
-    def test_non_note_tables_are_not_reconciled(self):
+    def test_equity_movement_table_with_so_cuoi_nam_nay(self):
         statement = _statement_table(
-            StatementType.BALANCE_SHEET_ASSETS,
-            [["Hàng tồn kho", "140", "V.6", "1.000", "900"]],
+            StatementType.BALANCE_SHEET_EQUITY,
+            [
+                ["VỐN CHỦ SỞ HỮU", "400", "V.13", "27.506.306.836", "4.186.970.084"],
+                ["Vốn góp của chủ sở hữu", "411", "", "17.263.927.091", "17.263.927.091"],
+                ["Lợi nhuận sau thuế chưa phân phối", "421", "", "10.242.379.745", "-13.076.957.007"],
+            ],
         )
-        unrelated = ExtractedTable(
+        note = ExtractedTable(
             index=2,
-            rows=[["Hàng tồn kho", "1.000"]],
-            statement_type=StatementType.UNKNOWN,
-            title_hint="Hàng tồn kho",
+            rows=[
+                ["Tình hình tăng, giảm vốn chủ sở hữu", "Vốn góp của chủ sở hữu", "Lợi nhuận sau thuế chưa phân phối", "Tổng cộng"],
+                ["", "VND", "VND", "VND"],
+                ["Số đầu năm trước", "17.263.927.091", "11.360.666.756", "28.624.593.847"],
+                ["Lợi nhuận thuần trong năm trước", "-", "(24.437.623.763)", "(24.437.623.763)"],
+                ["Số cuối năm trước, đầu năm nay", "17.263.927.091", "(13.076.957.007)", "4.186.970.084"],
+                ["Lợi nhuận thuần trong năm nay", "-", "24.066.148.360", "24.066.148.360"],
+                ["Số cuối năm nay", "17.263.927.091", "10.242.379.745", "27.506.306.836"],
+            ],
+            statement_type=StatementType.NOTE,
+            title_hint="Vốn chủ sở hữu",
         )
 
-        self.assertEqual(reconcile_note_tables([statement, unrelated]), [])
+        results = reconcile_note_tables([statement, note])
+        matched_codes = {r.statement_code: r.status for r in results}
+        self.assertEqual(matched_codes.get("411"), "Matched")
+        self.assertEqual(matched_codes.get("421"), "Matched")
+        self.assertNotIn("400", matched_codes)
 
 
 if __name__ == "__main__":
     unittest.main()
+

@@ -318,17 +318,20 @@ def _build_word_comment_targets(
                         category,
                     )
                 )
+    DETERMINISTIC_MATCH_TYPES = {
+        "Tên dòng và Thuyết minh",
+        "Tiêu đề kỳ hạn và Thuyết minh",
+        "Mã Thuyết minh + tên + Tổng cộng",
+        "Tên dòng + PL",
+        "Tên dòng + mã BS",
+        "Tên dòng + mã CF",
+        "Vốn đã góp + mã BS",
+        "Tên bảng + Tổng cộng",
+        "Chi phí khấu hao -> LCTTTT",
+        "Mã số BCTC",
+    }
     for match in note_matches:
-        rich_match = match.match_type in {
-            "Tên dòng và Thuyết minh",
-            "Tiêu đề kỳ hạn và Thuyết minh",
-            "Mã Thuyết minh + tên + Tổng cộng",
-            "Tên dòng + PL",
-            "Tên dòng + mã BS",
-            "Tên dòng + mã CF",
-            "Vốn đã góp + mã BS",
-            "Tên bảng + Tổng cộng",
-        }
+        rich_match = match.match_type in DETERMINISTIC_MATCH_TYPES
         if match.status == "Matched":
             continue
         if (
@@ -366,6 +369,16 @@ def _build_word_comment_targets(
         else:
             references = [match.note_current_cell or match.note_prior_cell]
         row_index, column_index = _first_meaningful_source_cell(table)
+        is_high_confidence = (
+            rich_match
+            and (match.match_score == 0.0 or match.match_score >= 80.0)
+            and not _is_component_difference(match, table)
+        )
+        category = (
+            WordCommentCategory.DIFFERENCE
+            if match.status == "Difference" and is_high_confidence
+            else WordCommentCategory.REVIEW
+        )
         for reference in {reference for reference in references if reference} or {""}:
             if reference:
                 source_location = _source_location_from_excel_reference(reference, table)
@@ -376,12 +389,8 @@ def _build_word_comment_targets(
                     table.index,
                     row_index,
                     column_index,
-                    _word_note_comment_message(match, reference),
-                    (
-                        WordCommentCategory.DIFFERENCE
-                        if match.status == "Difference"
-                        else WordCommentCategory.REVIEW
-                    ),
+                    _word_note_comment_message(match, reference, table),
+                    category,
                 )
             )
     return targets
@@ -431,7 +440,37 @@ def _first_meaningful_source_cell(table: ExtractedTable) -> tuple[int, int]:
     return 0, 0
 
 
-def _word_note_comment_message(match: NoteMatchResult, reference: str = "") -> str:
+def _is_component_difference(match: NoteMatchResult, table: ExtractedTable | None) -> bool:
+    if match.status != "Difference" or table is None:
+        return False
+    diffs = [
+        abs(d)
+        for d in (match.current_difference, match.prior_difference)
+        if d is not None and abs(d) > Decimal("0.0001")
+    ]
+    if not diffs:
+        return False
+
+    skip_values = {
+        match.note_current,
+        match.note_prior,
+        match.statement_current,
+        match.statement_prior,
+    }
+
+    for row in table.rows:
+        for cell in row:
+            parsed = parse_accounting_number(cell)
+            if parsed is not None and abs(parsed) in diffs and parsed not in skip_values:
+                return True
+    return False
+
+
+def _word_note_comment_message(
+    match: NoteMatchResult,
+    reference: str = "",
+    table: ExtractedTable | None = None,
+) -> str:
     status = NOTE_STATUS_LABELS.get(match.status, match.status)
     referenced_differences = [
         difference
@@ -445,7 +484,7 @@ def _word_note_comment_message(match: NoteMatchResult, reference: str = "") -> s
         (value for value in referenced_differences if _has_check_difference(value)),
         referenced_differences[0] if referenced_differences else match.current_difference,
     )
-    if match.match_type not in {
+    rich_match = match.match_type in {
         "Tên dòng và Thuyết minh",
         "Tiêu đề kỳ hạn và Thuyết minh",
         "Mã Thuyết minh + tên + Tổng cộng",
@@ -454,10 +493,29 @@ def _word_note_comment_message(match: NoteMatchResult, reference: str = "") -> s
         "Tên dòng + mã CF",
         "Vốn đã góp + mã BS",
         "Tên bảng + Tổng cộng",
-    }:
+        "Chi phí khấu hao -> LCTTTT",
+        "Mã số BCTC",
+    }
+    component_diff = _is_component_difference(match, table)
+
+    if match.status == "Difference":
+        if component_diff:
+            formatted = _format_vietnamese_number(difference) if difference is not None else ""
+            return (
+                f"Đối chiếu TM–BCTC (Cần xem xét): Số liệu TM đọc được nghi vấn là chỉ tiêu thành phần. "
+                f"Chênh lệch so với BCTC là {formatted} VND. Đề nghị kiểm toán viên kiểm tra lại."
+            )
+        if not rich_match or (match.match_score > 0.0 and match.match_score < 80.0):
+            diff_text = f" (chênh lệch {_format_vietnamese_number(difference)} VND)" if (difference is not None and _has_check_difference(difference)) else ""
+            return (
+                f"Đối chiếu TM–BCTC (Cần xem xét): Phát hiện số liệu nghi vấn chưa khớp giữa TM và BCTC"
+                f"{diff_text}. Đề nghị kiểm toán viên kiểm tra lại cấu trúc Thuyết minh."
+            )
+
+    if not rich_match:
         if difference is not None and _has_check_difference(difference):
             formatted = _format_vietnamese_number(difference)
-            return f"Đối chiếu TM–BCTC: Có chênh lệch {formatted} VND."
+            return f"Đối chiếu TM–BCTC (Cần xem xét): Chênh lệch suy luận {formatted} VND."
         return f"Đối chiếu TM–BCTC: {status}."
     source = match.source or "BCTC"
     target = match.item_name or match.note_title or "chỉ tiêu phù hợp"
