@@ -254,7 +254,7 @@ class StreamlitInterfaceTest(unittest.TestCase):
                 ),
             )
 
-        self.assertEqual([call[0] for call in fake_streamlit.metric_calls], [("🔴 Sai lệch", 1), ("🟠 Cần xem xét", 0), ("📋 Bảng bị ảnh hưởng", 1)])
+        self.assertEqual([call[0] for call in fake_streamlit.metric_calls], [("🔴 Sai lệch", 1), ("🟡 Cần xem xét", 0), ("📋 Bảng bị ảnh hưởng", 1)])
         self.assertEqual(len(fake_streamlit.dataframe_calls), 1)
         self.assertEqual(fake_streamlit.dataframe_calls[0][0][0][0]["Mức độ"], "🔴 Sai lệch")
 

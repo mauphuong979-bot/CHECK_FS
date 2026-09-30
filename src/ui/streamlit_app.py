@@ -245,7 +245,7 @@ def _render_sidebar_guide() -> None:
             ("2. Tải tệp lên ứng dụng", "Kéo thả tệp `.docx` vào vùng tải lên ở giao diện chính hoặc nhấn chọn file."),
             ("3. Tự động trích xuất", "Hệ thống tự động đọc bảng và lập báo cáo ngay khi tải tệp lên."),
             ("4. Nhận diện Thông tư", "Tự động nhận diện chế độ kế toán (TT 200 / TT 133) và áp dụng RulePack."),
-            ("5. Xem tổng quan kết quả", "Theo dõi tổng số **🔴 Sai lệch**, **🟠 Cần xem xét** và danh sách bảng bị ảnh hưởng."),
+            ("5. Xem tổng quan kết quả", "Theo dõi tổng số **🔴 Sai lệch**, **🟡 Cần xem xét** và danh sách bảng bị ảnh hưởng."),
             ("6. Tải xuống kết quả", "Nhấn **Tải xuống Word và Excel** (hoặc tải từng file XLSX / DOCX)."),
             ("7. Thứ tự Sheet Excel", "Các sheet có số liệu (`00_Tong_hop`, BS, PL, CF, TM) xếp trước; chữ ký/thông tin xếp sau."),
             ("8. Màu sắc Tab Sheet", "Tab **🔴 Đỏ sẫm (`#C00000`)**: Sai lệch; **🟡 Vàng (`#FFC000`)**: Cần xem xét; **🟢 Xanh (`#70AD47`)**: Khớp."),
@@ -372,14 +372,14 @@ def _render_attention_summary(attention_items: tuple, regime_detection=None, app
     with col1:
         st.metric("🔴 Sai lệch", len(differences))
     with col2:
-        st.metric("🟠 Cần xem xét", len(reviews))
+        st.metric("🟡 Cần xem xét", len(reviews))
     with col3:
         st.metric("📋 Bảng bị ảnh hưởng", affected_tables)
 
     if attention_items:
         tab_diff, tab_rev = st.tabs([
             f"🔴 Sai lệch ({len(differences)})",
-            f"🟠 Cần xem xét ({len(reviews)})",
+            f"🟡 Cần xem xét ({len(reviews)})",
         ])
 
         def _render_item_table(items_list: list) -> None:
@@ -388,7 +388,7 @@ def _render_attention_summary(attention_items: tuple, regime_detection=None, app
                 return
             issue_rows = [
                 {
-                    "Mức độ": "🔴 Sai lệch" if item.severity == "Sai lệch" else "🟠 Cần xem xét",
+                    "Mức độ": "🔴 Sai lệch" if item.severity == "Sai lệch" else "🟡 Cần xem xét",
                     "Bảng": item.table_index,
                     "Nội dung bảng": item.table_title,
                     "Loại bảng": item.table_type,
