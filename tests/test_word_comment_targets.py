@@ -4,7 +4,13 @@ from decimal import Decimal
 from openpyxl import Workbook
 from openpyxl.comments import Comment
 
-from src.domain.models import ExtractedTable, NoteMatchResult, StatementType, TableCheckResult
+from src.domain.models import (
+    ExtractedTable,
+    NoteMatchResult,
+    StatementType,
+    TableCheckResult,
+    WordCommentCategory,
+)
 from src.reporting.excel_report import (
     DATA_START_ROW,
     WARNING_FILL,
@@ -37,7 +43,10 @@ class WordCommentTargetTest(unittest.TestCase):
         )
 
         self.assertEqual(len(targets), 1)
-        self.assertIn("chênh lệch 25 VND", targets[0].message)
+        self.assertEqual(
+            targets[0].message,
+            "Đối chiếu TM–PL: “Tổng lợi nhuận kế toán trước thuế”, mã số 50: chênh lệch 25.",
+        )
 
     def test_maturity_match_does_not_create_word_comment(self):
         table = ExtractedTable(
@@ -78,7 +87,9 @@ class WordCommentTargetTest(unittest.TestCase):
                 NoteMatchResult(
                     note_table_index=1,
                     note_title="15.1. Ngắn hạn",
-                    note_current_cell="B5",
+                    note_current_cell="B4",
+                    note_current=Decimal("1100"),
+                    statement_current=Decimal("1001100"),
                     source="BS",
                     item_name="Vay và nợ thuê tài chính ngắn hạn",
                     statement_code="320",
@@ -91,8 +102,8 @@ class WordCommentTargetTest(unittest.TestCase):
 
         self.assertEqual(
             targets[0].message,
-            "Đối chiếu TM–BS: Tìm thấy tại “Vay và nợ thuê tài chính ngắn hạn”, "
-            "mã số 320. Có chênh lệch 1.000.000 VND.",
+            "Đối chiếu TM–BS: “Vay và nợ thuê tài chính ngắn hạn”, mã số 320: "
+            "BS kỳ này 1.001.100; TM 1.100; chênh lệch 1.000.000.",
         )
 
     def test_cash_flow_depreciation_difference_has_detailed_comment(self):
@@ -126,8 +137,8 @@ class WordCommentTargetTest(unittest.TestCase):
         self.assertEqual(len(targets), 1)
         self.assertEqual(
             targets[0].message,
-            "Đối chiếu TM–CF: Tìm thấy tại “Khấu hao tài sản cố định và bất động sản đầu tư”, "
-            "mã số 02. Có chênh lệch 10 VND.",
+            "Đối chiếu TM–CF: “Khấu hao tài sản cố định và bất động sản đầu tư”, "
+            "mã số 02: chênh lệch 10.",
         )
         self.assertNotIn("Số liệu khớp", targets[0].message)
 
@@ -146,7 +157,9 @@ class WordCommentTargetTest(unittest.TestCase):
                 NoteMatchResult(
                     note_table_index=1,
                     note_title=table.title_hint,
-                    note_current_cell="B5",
+                    note_current_cell="B4",
+                    note_current=Decimal("100.01"),
+                    statement_current=Decimal("100.02"),
                     source="BS",
                     item_name="Chỉ tiêu USD",
                     statement_code="100",
@@ -159,8 +172,8 @@ class WordCommentTargetTest(unittest.TestCase):
 
         self.assertEqual(
             targets[0].message,
-            "Đối chiếu TM–BS: Tìm thấy tại “Chỉ tiêu USD”, mã số 100. "
-            "Có chênh lệch 0,01 VND.",
+            "Đối chiếu TM–BS: “Chỉ tiêu USD”, mã số 100: "
+            "BS kỳ này 100,02; TM 100,01; chênh lệch 0,01.",
         )
 
     def test_matched_full_item_title_does_not_create_word_comment(self):
@@ -208,7 +221,7 @@ class WordCommentTargetTest(unittest.TestCase):
 
         self.assertEqual(targets, [])
 
-    def test_skips_format_warning_and_uses_short_arithmetic_message(self):
+    def test_skips_format_warning_and_cells_without_rule_comment(self):
         table = ExtractedTable(1, [["1.000", "100"]], StatementType.NOTE)
         worksheet = Workbook().active
         format_cell = worksheet.cell(DATA_START_ROW, 1, "1.000")
@@ -224,11 +237,10 @@ class WordCommentTargetTest(unittest.TestCase):
             [],
         )
 
-        self.assertEqual(len(targets), 1)
-        self.assertEqual(targets[0].column_index, 1)
-        self.assertEqual(targets[0].message, "Kiểm tra số học: Có chênh lệch.")
+        # Ô chỉ tô màu (không có comment của rule) không được suy diễn thành sai lệch.
+        self.assertEqual(targets, [])
 
-    def test_note_reconciliation_message_is_short_and_distinct(self):
+    def test_inferred_difference_without_amount_is_excel_only(self):
         table = ExtractedTable(1, [["Doanh thu", "100"]], StatementType.NOTE)
         worksheet = Workbook().active
         targets = _build_word_comment_targets(
@@ -239,17 +251,14 @@ class WordCommentTargetTest(unittest.TestCase):
                 NoteMatchResult(
                     note_table_index=1,
                     note_title="Doanh thu",
-                    note_current_cell="B5",
+                    note_current_cell="B4",
                     status="Difference",
                 )
             ],
         )
 
-        self.assertEqual(len(targets), 1)
-        self.assertEqual(
-            targets[0].message,
-            "Đối chiếu TM–BCTC (Cần xem xét): Phát hiện số liệu nghi vấn chưa khớp giữa TM và BCTC. Đề nghị kiểm toán viên kiểm tra lại cấu trúc Thuyết minh.",
-        )
+        # Ghép suy luận không có số liệu chênh lệch cụ thể: chỉ ghi Excel, không comment Word.
+        self.assertEqual(targets, [])
 
     def test_standard_note_reconciliation_comment_includes_difference_amount(self):
         table = ExtractedTable(
@@ -275,9 +284,11 @@ class WordCommentTargetTest(unittest.TestCase):
         )
 
         self.assertEqual(len(targets), 1)
+        self.assertEqual(targets[0].category, WordCommentCategory.REVIEW)
         self.assertEqual(
             targets[0].message,
-            "Đối chiếu TM–BCTC (Cần xem xét): Phát hiện số liệu nghi vấn chưa khớp giữa TM và BCTC (chênh lệch 8 VND). Đề nghị kiểm toán viên kiểm tra lại cấu trúc Thuyết minh.",
+            "Đối chiếu TM–BCTC (cần xem xét): “Tiền”: chênh lệch 8. "
+            "Lý do: chỉ tiêu được ghép theo suy luận, chưa đủ căn cứ kết luận sai lệch.",
         )
 
     def test_skips_unlinked_note_without_statement_target(self):
@@ -296,7 +307,7 @@ class WordCommentTargetTest(unittest.TestCase):
         )
         self.assertEqual(targets, [])
 
-    def test_keeps_missing_statement_comment_when_target_code_is_known(self):
+    def test_missing_statement_without_note_cell_is_not_anchored_in_word(self):
         table = ExtractedTable(1, [["Nguyên giá", "100"]], StatementType.NOTE)
         worksheet = Workbook().active
         targets = _build_word_comment_targets(
@@ -305,10 +316,10 @@ class WordCommentTargetTest(unittest.TestCase):
             {1: worksheet},
             [NoteMatchResult(note_table_index=1, note_title="Tài sản cố định hữu hình", statement_code="222", status="Statement not found")],
         )
-        self.assertEqual(len(targets), 1)
-        self.assertEqual(targets[0].message, "Đối chiếu TM–BCTC: Không tìm thấy chỉ tiêu BCTC.")
+        # Không có ô số liệu TM cụ thể thì không neo comment vào ô tiêu đề bất kỳ.
+        self.assertEqual(targets, [])
 
-    def test_zero_missing_bs_item_uses_one_comment_for_both_periods(self):
+    def test_zero_note_item_missing_on_statement_is_excel_only(self):
         table = ExtractedTable(
             1,
             [["Thuế và các khoản khác phải thu Nhà nước", "-", "", "-"]],
@@ -334,8 +345,8 @@ class WordCommentTargetTest(unittest.TestCase):
             ],
         )
 
-        self.assertEqual(len(targets), 1)
-        self.assertEqual((targets[0].row_index, targets[0].column_index), (0, 1))
+        # TM toàn gạch ngang, BCTC không trình bày dòng tương ứng: không phải sai sót.
+        self.assertEqual(targets, [])
 
     def test_named_total_without_statement_target_creates_review_comments(self):
         table = ExtractedTable(
@@ -361,8 +372,10 @@ class WordCommentTargetTest(unittest.TestCase):
             ],
         )
 
-        self.assertEqual(len(targets), 2)
-        self.assertTrue(all("Chưa tìm thấy chỉ tiêu phù hợp" in target.message for target in targets))
+        # Một comment cho bảng thay vì lặp lại cùng nội dung ở cả hai kỳ.
+        self.assertEqual(len(targets), 1)
+        self.assertEqual((targets[0].row_index, targets[0].column_index), (1, 1))
+        self.assertIn("Chưa tìm thấy chỉ tiêu BCTC phù hợp", targets[0].message)
 
 
 if __name__ == "__main__":

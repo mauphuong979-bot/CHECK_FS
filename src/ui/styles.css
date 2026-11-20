@@ -1,0 +1,388 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+/* ---------- Design tokens ---------- */
+[data-testid="stAppViewContainer"],
+div[role="dialog"] {
+    --app-navy: #1F4E78;
+    --app-navy-dark: #183654;
+    --app-blue: #2E6DA4;
+    --app-border: #DDE5ED;
+    --app-muted: #61758A;
+    --app-surface: #F5F8FB;
+    --app-text: #1E293B;
+}
+
+html, body, [data-testid="stAppViewContainer"] {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-size: 14px;
+}
+
+/* ---------- Khung trang: không sidebar, không header Streamlit ---------- */
+[data-testid="stMainBlockContainer"] {
+    padding-top: 0.75rem;
+    padding-bottom: 1.5rem;
+    max-width: 1280px;
+}
+
+header,
+[data-testid="stHeader"],
+.stAppHeader,
+[data-testid="stToolbar"],
+[data-testid="stToolbarActions"],
+[data-testid="stHeaderNav"],
+.stAppToolbar,
+.stAppDeployButton,
+#MainMenu,
+footer,
+a[href*="github.com"],
+[data-testid="stSidebar"],
+[data-testid="stSidebarCollapsedControl"],
+[data-testid="stExpandSidebarButton"] {
+    display: none !important;
+}
+
+[data-testid="stVerticalBlock"] {
+    gap: 0.65rem;
+}
+
+/* Iframe chỉ chạy script (cookie, cầu nối ghi nhớ đăng nhập) không chiếm chỗ */
+[data-testid="stElementContainer"]:has(> iframe[height="0"]),
+[data-testid="stElementContainer"]:has(iframe[height="0"]) {
+    position: absolute;
+    width: 0;
+    height: 0;
+    overflow: hidden;
+}
+
+/* ---------- Thanh trên cùng ---------- */
+.st-key-top_bar {
+    border-bottom: 1px solid var(--app-border);
+    padding-bottom: 0.4rem;
+    margin-bottom: 0.35rem;
+    gap: 0.4rem;
+}
+
+.app-title {
+    font-weight: 700;
+    font-size: 1.2rem;
+    color: var(--app-navy-dark);
+    white-space: nowrap;
+}
+
+.st-key-top_bar [data-testid="stPopover"] button,
+.st-key-top_bar .stButton > button,
+.st-key-top_bar [data-testid="stLinkButton"] a {
+    background: transparent;
+    color: var(--app-navy-dark);
+    border: 1px solid var(--app-border);
+    border-radius: 8px;
+    padding: 0.2rem 0.7rem;
+    min-height: 2.1rem;
+    box-shadow: none;
+}
+
+.st-key-top_bar [data-testid="stPopover"] button:hover,
+.st-key-top_bar .stButton > button:hover,
+.st-key-top_bar [data-testid="stLinkButton"] a:hover {
+    background: var(--app-surface);
+    border-color: #B5C7D8;
+    color: var(--app-navy-dark);
+}
+
+@media (max-width: 640px) {
+    .app-title { font-size: 1rem; white-space: normal; }
+    .st-key-top_bar [data-testid="stLinkButton"] { display: none; }
+}
+
+/* ---------- Thẻ nội dung & tiêu đề mục ---------- */
+.section-title {
+    font-weight: 700;
+    font-size: 1rem;
+    color: var(--app-navy-dark);
+    margin: 0;
+    line-height: 1.6;
+}
+
+[data-testid="stMarkdownContainer"]:has(.section-title) {
+    margin-bottom: 0 !important;
+}
+
+.section-title span {
+    font-weight: 400;
+    font-size: 0.78rem;
+    color: var(--app-muted);
+    margin-left: 0.4rem;
+}
+
+.st-key-upload_box,
+.st-key-admin_users_box,
+.st-key-admin_logs_box {
+    gap: 0.5rem;
+    border-radius: 10px;
+    box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04);
+}
+
+.st-key-upload_box [data-testid="stFileUploaderDropzone"] {
+    min-height: 5.25rem;
+    padding: 0.75rem 1rem;
+    background: var(--app-surface);
+    border: 1px dashed #B5C7D8;
+    border-radius: 8px;
+}
+
+/* Chữ tiếng Việt cho vùng tải tệp mặc định của Streamlit */
+[data-testid="stFileUploaderDropzone"] button [data-testid="stMarkdownContainer"] p {
+    font-size: 0 !important;
+}
+
+[data-testid="stFileUploaderDropzone"] button [data-testid="stMarkdownContainer"] p::after {
+    content: "Chọn tệp";
+    font-size: 0.85rem;
+}
+
+[data-testid="stFileUploaderDropzoneInstructions"] span {
+    font-size: 0 !important;
+}
+
+[data-testid="stFileUploaderDropzoneInstructions"] span::after {
+    content: "Kéo thả tệp .docx vào đây · tối đa 200MB";
+    font-size: 0.85rem;
+}
+
+[data-testid="stFileUploaderDropzoneInstructions"] small {
+    display: none;
+}
+
+/* ---------- Nhãn, nút, ô nhập ---------- */
+[data-testid="stWidgetLabel"] p,
+[data-testid="stButton"] p,
+[data-testid="stDownloadButton"] p {
+    font-size: 0.85rem;
+}
+
+[data-testid="stTextInput"] input {
+    background-color: #F8FAFC;
+}
+
+/* Gợi ý "Press Enter to submit form" của Streamlit chỉ có tiếng Anh và đè lên nút hiện mật khẩu */
+[data-testid="InputInstructions"] {
+    display: none;
+}
+
+[data-testid="stTextInput"] input:focus {
+    background-color: #FFFFFF;
+}
+
+.stButton > button:disabled,
+.stButton > button:disabled:hover {
+    cursor: not-allowed;
+}
+
+/* ---------- Tabs ---------- */
+[data-testid="stTabs"] [data-baseweb="tab-list"] {
+    gap: 0.25rem;
+}
+
+[data-testid="stTabs"] [data-baseweb="tab"] p {
+    font-weight: 600;
+    font-size: 0.9rem;
+}
+
+/* ---------- Thông báo ---------- */
+[data-testid="stAlert"] {
+    padding: 0;
+}
+
+[data-testid="stAlertContainer"] {
+    padding: 0.65rem 0.85rem;
+}
+
+/* ---------- Thẻ chỉ số ---------- */
+[data-testid="stMetric"] {
+    background: #FFFFFF;
+    border: 1px solid #E2E8F0;
+    border-radius: 8px;
+    padding: 0.85rem 1rem;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.02);
+}
+
+[data-testid="stMetricLabel"] {
+    min-height: auto;
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: #475569;
+    margin-bottom: 0.25rem;
+}
+
+[data-testid="stMetricValue"] {
+    font-size: 1.45rem;
+    font-weight: 700;
+    color: #0F172A;
+    line-height: 1.25;
+    margin-bottom: 0.2rem;
+}
+
+/* ---------- Kết quả kiểm tra: kết luận, phạm vi, danh sách phát hiện ---------- */
+.verdict-row { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
+.verdict-chip {
+    display: inline-block;
+    padding: 0.3rem 0.75rem;
+    border-radius: 6px;
+    font-weight: 600;
+    font-size: 0.95rem;
+    line-height: 1.3;
+}
+.verdict-chip.danger { background: #FEF2F2; color: #B91C1C; border: 1px solid #FCA5A5; }
+.verdict-chip.warning { background: #FFFBEB; color: #B45309; border: 1px solid #FDE68A; }
+.verdict-chip.success { background: #F0FDF4; color: #15803D; border: 1px solid #BBF7D0; }
+.scope-line { font-size: 0.8rem; color: var(--app-muted); margin: -0.15rem 0 0.25rem; }
+
+.finding-section {
+    font-size: 0.85rem;
+    font-weight: 600;
+    margin: 0.35rem 0 0.1rem;
+}
+.finding-section.danger { color: #B91C1C; }
+.finding-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 1rem;
+    padding: 0.6rem 0;
+    border-top: 1px solid var(--app-border);
+    align-items: center;
+}
+.finding-title { font-size: 0.92rem; font-weight: 600; color: var(--app-text); line-height: 1.35; }
+.finding-meta { font-size: 0.78rem; color: var(--app-muted); line-height: 1.45; margin-top: 0.1rem; }
+.finding-tag {
+    display: inline-block;
+    font-size: 0.72rem;
+    padding: 0 0.4rem;
+    margin-right: 0.4rem;
+    border-radius: 4px;
+    background: var(--app-surface);
+    border: 1px solid var(--app-border);
+    color: var(--app-muted);
+}
+.finding-values {
+    font-size: 0.78rem;
+    color: #475569;
+    font-variant-numeric: tabular-nums;
+    margin-top: 0.1rem;
+}
+.finding-diff {
+    font-size: 1.05rem;
+    font-weight: 600;
+    text-align: right;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+    min-width: 6.5rem;
+}
+.finding-diff.danger { color: #B91C1C; }
+.finding-diff.warning { color: #B45309; }
+@media (max-width: 640px) {
+    .finding-row { grid-template-columns: 1fr; gap: 0.25rem; }
+    .finding-diff { text-align: left; }
+}
+
+/* ---------- Màn hình đăng nhập ---------- */
+.st-key-login_box {
+    margin-top: 12vh;
+    padding: 1.5rem 1.75rem 1.1rem;
+    background: #FFFFFF;
+    border-radius: 12px;
+    box-shadow: 0 10px 25px rgba(15, 23, 42, 0.08);
+}
+
+.login-logo {
+    text-align: center;
+    font-size: 2rem;
+    line-height: 1.2;
+}
+
+.login-header {
+    font-size: 1.4rem;
+    font-weight: 700;
+    color: var(--app-navy-dark);
+    text-align: center;
+    margin-top: 0.2rem;
+}
+
+.login-sub {
+    text-align: center;
+    color: var(--app-muted);
+    font-size: 0.88rem;
+    margin-bottom: 0.4rem;
+}
+
+.st-key-login_box [data-testid="stForm"] {
+    border: none;
+    padding: 0;
+}
+
+.st-key-login_box [data-testid="stCaptionContainer"] {
+    text-align: center;
+}
+
+@media (max-width: 640px) {
+    .st-key-login_box { margin-top: 4vh; }
+}
+
+/* Màn hình chờ trong lúc kiểm tra ghi nhớ đăng nhập */
+.auth-wait {
+    position: fixed;
+    inset: 0;
+    z-index: 999990;
+    background: #FFFFFF;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 14px;
+    color: var(--app-muted);
+    font-size: 15px;
+}
+
+.auth-wait-spinner {
+    width: 38px;
+    height: 38px;
+    border-radius: 50%;
+    border: 4px solid #E6E6E6;
+    border-top-color: var(--app-navy);
+    animation: auth-rotate 0.8s linear infinite;
+}
+
+.auth-wait-fallback {
+    font-size: 0.85rem;
+    visibility: hidden;
+    animation: auth-reveal 0s 8s forwards;
+}
+
+@keyframes auth-rotate { to { transform: rotate(360deg); } }
+@keyframes auth-reveal { to { visibility: visible; } }
+
+.st-key-checkfs_remember_bridge_box {
+    position: absolute;
+    left: -10000px;
+    height: 0;
+    overflow: hidden;
+}
+
+/* ---------- Trang quản trị ---------- */
+.admin-col-head {
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--app-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+}
+
+/* ---------- Hộp thoại hướng dẫn ---------- */
+div[role="dialog"] [data-testid="stMarkdownContainer"] p,
+div[role="dialog"] [data-testid="stMarkdownContainer"] li {
+    font-size: 0.92rem;
+    line-height: 1.6;
+}
+
+div[role="dialog"] [data-testid="stMarkdownContainer"] table {
+    font-size: 0.88rem;
+}

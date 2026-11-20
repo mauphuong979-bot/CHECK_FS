@@ -45,6 +45,20 @@ class TableLayoutTest(unittest.TestCase):
 
         self.assertEqual(detect_table_layout(table), TableLayout(2, 3, 3))
 
+    def test_detects_single_period_date_range_header(self):
+        table = ExtractedTable(
+            1,
+            [
+                ["Chỉ tiêu", "Mã số", "Thuyết minh", "Từ 11/12/2024 đến 31/12/2025"],
+                ["Doanh thu", "01", "VI.1", "240.498.290.892"],
+            ],
+            StatementType.INCOME_STATEMENT,
+        )
+        current_cols, prior_cols = detect_period_columns_from_headers(table)
+        self.assertEqual(current_cols, [3])
+        self.assertEqual(prior_cols, [])
+        self.assertEqual(detect_table_layout(table), TableLayout(2, 4, 4))
+
     def test_falls_back_safely_for_single_column_table(self):
         table = ExtractedTable(
             1,

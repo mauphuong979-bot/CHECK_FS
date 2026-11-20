@@ -976,6 +976,55 @@ class NoteMatcherTest(unittest.TestCase):
         self.assertEqual(matched_codes.get("421"), "Matched")
         self.assertNotIn("400", matched_codes)
 
+    def test_reconciles_single_period_income_statement_note(self):
+        pl = ExtractedTable(
+            index=1,
+            rows=[
+                ["CHỈ TIÊU", "Mã số", "Thuyết minh", "Từ 11/12/2024 đến 31/12/2025"],
+                ["1. Doanh thu bán hàng và cung cấp dịch vụ", "01", "VI.1", "240.498.290.892"],
+            ],
+            statement_type=StatementType.INCOME_STATEMENT,
+        )
+        note = ExtractedTable(
+            index=2,
+            rows=[
+                ["", "Từ 11/12/2024 đến 31/12/2025"],
+                ["Doanh thu bán thành phẩm", "240.498.290.892"],
+                ["Tổng cộng", "240.498.290.892"],
+            ],
+            statement_type=StatementType.NOTE,
+            title_hint="Doanh thu bán hàng và cung cấp dịch vụ",
+        )
+        results = reconcile_note_tables([pl, note])
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].status, "Matched")
+        self.assertEqual(results[0].note_current, Decimal("240498290892"))
+        self.assertIsNone(results[0].note_prior)
+
+    def test_equity_movement_table_is_isolated_and_never_falls_through_to_code_400(self):
+        statement = _statement_table(
+            StatementType.BALANCE_SHEET_EQUITY,
+            [
+                ["VỐN CHỦ SỞ HỮU", "400", "V.13", "27.506.306.836", "4.186.970.084"],
+                ["Vốn góp của chủ sở hữu", "411", "", "17.263.927.091", "17.263.927.091"],
+                ["Lợi nhuận sau thuế chưa phân phối", "421", "", "10.242.379.745", "-13.076.957.007"],
+            ],
+        )
+        note = ExtractedTable(
+            index=2,
+            rows=[
+                ["Tình hình tăng, giảm vốn chủ sở hữu", "Vốn góp của chủ sở hữu", "Lợi nhuận sau thuế chưa phân phối", "Tổng cộng"],
+                ["", "VND", "VND", "VND"],
+                ["Biến động chưa rõ A", "17.263.927.091", "11.360.666.756", "28.624.593.847"],
+                ["Biến động chưa rõ B", "17.263.927.091", "10.242.379.745", "27.506.306.836"],
+            ],
+            statement_type=StatementType.NOTE,
+            title_hint="Vốn chủ sở hữu",
+        )
+        results = reconcile_note_tables([statement, note])
+        matched_codes = [r.statement_code for r in results]
+        self.assertNotIn("400", matched_codes)
+
 
 if __name__ == "__main__":
     unittest.main()

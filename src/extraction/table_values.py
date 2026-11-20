@@ -50,11 +50,11 @@ def code_excel_row_lookup(
 def table_value_lookup(
     table: ExtractedTable,
     layout: TableLayout,
-) -> dict[str, dict[int, float]]:
+) -> dict[str, dict[int, Decimal]]:
     typed_values = table_value_state_lookup(table, layout)
     return {
         code: {
-            column: float(cell_value.value) if cell_value.value is not None else 0.0
+            column: cell_value.value if cell_value.value is not None else Decimal(0)
             for column, cell_value in values_by_column.items()
         }
         for code, values_by_column in typed_values.items()

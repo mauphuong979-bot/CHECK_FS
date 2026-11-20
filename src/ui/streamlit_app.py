@@ -1,87 +1,103 @@
 from __future__ import annotations
 
-from base64 import b64encode
 from hashlib import sha256
+from html import escape
+import logging
 from pathlib import Path
 from tempfile import NamedTemporaryFile
+from time import perf_counter
 
 import streamlit as st
 
+from src.auth import usage_log
+from src.auth.models import UserAccount
+from src.auth.user_store import UserDirectory
+from src.reporting.number_format import format_amount
 from src.services.audit_service import (
+    AuditAttentionItem,
+    AuditCoverage,
     AuditOutputs,
     UnsupportedFileError,
     create_audit_outputs,
 )
+from src.ui.admin_page import render_admin_page
+from src.ui.auth_gate import render_account_menu, require_login
+from src.ui.branding import APP_ICON, APP_TITLE, TRANSLATION_COMPARE_URL
+from src.ui.user_guide import show_user_guide
+
+LOGGER = logging.getLogger(__name__)
+STYLES_PATH = Path(__file__).with_name("styles.css")
 
 
 def main() -> None:
     st.set_page_config(
-        page_title="Kiểm tra báo cáo tài chính",
+        page_title=APP_TITLE,
+        page_icon=APP_ICON,
         layout="wide",
+        initial_sidebar_state="collapsed",
     )
+    _apply_styles()
+    user, directory = require_login()
+    _render_top_bar(user, directory)
 
+    if user.is_admin:
+        audit_tab, admin_tab = st.tabs(["🔍 Kiểm tra BCTC", "⚙️ Quản trị"])
+        with audit_tab:
+            render_audit_workspace(user.username)
+        with admin_tab:
+            render_admin_page(user, directory)
+    else:
+        render_audit_workspace(user.username)
+
+
+def _render_top_bar(user: UserAccount, directory: UserDirectory) -> None:
+    with st.container(key="top_bar", horizontal=True, vertical_alignment="center"):
+        st.markdown(f'<div class="app-title">{APP_ICON} {APP_TITLE}</div>', unsafe_allow_html=True)
+        st.space("stretch")
+        st.link_button(
+            "🌐 Đối chiếu số với bản dịch",
+            TRANSLATION_COMPARE_URL,
+            help="Mở ứng dụng so khớp số giữa BCTC tiếng Việt và bản dịch (tab mới).",
+        )
+        if st.button("❓", key="open_guide", help="Hướng dẫn sử dụng"):
+            show_user_guide()
+        render_account_menu(user, directory)
+
+
+def render_audit_workspace(username: str = "") -> None:
     _init_session_state()
-    _apply_compact_styles()
-    _render_sidebar_guide()
-
-    header_col, link_col = st.columns([2.5, 1], vertical_alignment="bottom")
-    with header_col:
-        st.markdown("## Kiểm tra báo cáo tài chính")
-        st.caption("Kéo thả hoặc chọn báo cáo DOCX để trích xuất bảng và tạo file Excel kiểm tra.")
-    with link_col:
+    with st.container(border=True, key="upload_box"):
         st.markdown(
-            """
-            <div style="text-align: right; margin-bottom: 0.5rem;">
-                <a href="https://wordnumcompareapp2-h4qbe8uc3ifcvpnwjldg7t.streamlit.app/" target="_blank" rel="noopener noreferrer" 
-                   style="display: inline-block; padding: 0.45rem 0.85rem; background-color: #F1F5F9; color: #1F4E78; 
-                          font-weight: 600; font-size: 0.85rem; border-radius: 0.45rem; border: 1px solid #CBD5E1; 
-                          text-decoration: none; box-shadow: 0 1px 2px rgba(0,0,0,0.04); transition: all 0.2s ease;">
-                   🌐 Đối chiếu số với bản dịch ↗
-                </a>
-            </div>
-            """,
+            '<div class="section-title">📂 Báo cáo cần kiểm tra <span>file Word .docx</span></div>',
             unsafe_allow_html=True,
         )
-
-    auto_process = st.checkbox(
-        "Tự động tạo báo cáo kiểm tra sau khi có file Word",
-        value=True,
-        key="auto_process_after_upload",
-        help="Tắt tùy chọn này nếu bạn muốn kiểm tra thiết lập trước rồi bấm nút tạo báo cáo.",
-    )
-
-    uploaded_file = st.file_uploader(
-        "Kéo thả tệp DOCX vào đây hoặc bấm để chọn",
-        type=["docx"],
-        accept_multiple_files=False,
-        help="Ứng dụng hiện xử lý một tệp DOCX cho mỗi lần kiểm tra.",
-    )
+        uploaded_file = st.file_uploader(
+            "Kéo thả tệp DOCX vào đây hoặc bấm để chọn",
+            type=["docx"],
+            accept_multiple_files=False,
+            help="Ứng dụng hiện xử lý một tệp DOCX cho mỗi lần kiểm tra.",
+            label_visibility="collapsed",
+        )
+        hint_column, action_column = st.columns([3, 1], vertical_alignment="center")
+        with hint_column:
+            st.caption("Chọn tệp rồi bấm **Tạo báo cáo kiểm tra** để bắt đầu.")
+        with action_column:
+            process_requested = st.button(
+                "Tạo báo cáo kiểm tra",
+                type="primary",
+                width="stretch",
+                disabled=uploaded_file is None,
+                help="Bấm để bắt đầu kiểm tra tệp DOCX đã chọn.",
+            )
 
     if uploaded_file is None:
-        st.info("Vui lòng tải lên tệp DOCX để bắt đầu.")
+        st.info("Tải lên tệp BCTC dạng .docx để bắt đầu. Bấm ❓ ở góc phải trên cùng để xem hướng dẫn.")
         return
 
-    _, action_column = st.columns([3, 1], vertical_alignment="bottom")
-    with action_column:
-        manual_process_requested = st.button(
-            "Tạo báo cáo kiểm tra",
-            type="primary",
-            width="stretch",
-            disabled=auto_process,
-            help=(
-                "Báo cáo sẽ tự động được tạo sau khi tải tệp."
-                if auto_process
-                else "Bấm để bắt đầu kiểm tra tệp DOCX đã chọn."
-            ),
-        )
-
     uploaded_fingerprint = sha256(uploaded_file.getbuffer()).hexdigest()
-    process_requested = (
-        auto_process
-        and uploaded_fingerprint != st.session_state["processed_file_fingerprint"]
-    ) or (not auto_process and manual_process_requested)
 
     if process_requested:
+        started_at = perf_counter()
         with st.spinner("Đang xử lý báo cáo..."):
             temp_path = None
             try:
@@ -91,9 +107,14 @@ def main() -> None:
 
                 outputs = create_audit_outputs(temp_path)
             except UnsupportedFileError as exc:
+                usage_log.log_event(
+                    username, usage_log.EVENT_AUDIT_FAILED, f"{uploaded_file.name}; Định dạng không hỗ trợ"
+                )
                 st.error(str(exc))
                 return
             except Exception:
+                LOGGER.exception("Không xử lý được tệp báo cáo tải lên.")
+                usage_log.log_event(username, usage_log.EVENT_AUDIT_FAILED, f"{uploaded_file.name}; Lỗi xử lý tệp")
                 st.error("Không thể xử lý tệp. Vui lòng kiểm tra định dạng báo cáo và thử lại.")
                 return
             finally:
@@ -107,9 +128,15 @@ def main() -> None:
         st.session_state["attention_items"] = outputs.attention_items
         st.session_state["regime_detection"] = outputs.regime_detection
         st.session_state["applied_rule_pack"] = outputs.applied_rule_pack
+        st.session_state["coverage"] = outputs.coverage
         st.session_state["processed_filename"] = uploaded_file.name
         st.session_state["processed_file_fingerprint"] = uploaded_fingerprint
-        st.success(f"Đã trích xuất {len(outputs.tables)} bảng và tạo báo cáo kiểm tra.")
+        usage_log.log_event(
+            username,
+            usage_log.EVENT_AUDIT,
+            _audit_log_details(uploaded_file.name, outputs, perf_counter() - started_at),
+        )
+        st.toast(f"Đã kiểm tra xong {len(outputs.tables)} bảng.", icon="✅")
 
     if st.session_state["word_comment_failed"]:
         st.warning(
@@ -117,230 +144,31 @@ def main() -> None:
             "Bạn vẫn có thể tải báo cáo Excel và thử lại với tệp DOCX khác."
         )
 
-    checked_stem = _checked_output_stem(st.session_state["processed_filename"])
-    combined_column, excel_column, word_column = st.columns(3)
-    with combined_column:
-        if st.session_state["workbook_bytes"] and st.session_state["commented_docx_bytes"]:
-            _render_sequential_download_button(
-                checked_stem,
-                workbook_bytes=st.session_state["workbook_bytes"],
-                commented_docx_bytes=st.session_state["commented_docx_bytes"],
-            )
-
-    with excel_column:
-        if st.session_state["workbook_bytes"]:
-            st.download_button(
-                "Tải xuống Excel XLSX",
-                data=st.session_state["workbook_bytes"],
-                file_name=f"{checked_stem}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                width="stretch",
-            )
-
-    with word_column:
-        if st.session_state["commented_docx_bytes"]:
-            st.download_button(
-                "Tải xuống Word có comment",
-                data=st.session_state["commented_docx_bytes"],
-                file_name=f"{checked_stem}.docx",
-                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                width="stretch",
-            )
-
-    if st.session_state["tables"]:
-        _render_attention_summary(
-            st.session_state["attention_items"],
-            st.session_state["regime_detection"],
-            st.session_state["applied_rule_pack"],
-        )
+    if st.session_state["processed_file_fingerprint"] != uploaded_fingerprint:
+        # Kết quả cũ thuộc tệp khác: không hiển thị để tránh nhầm báo cáo.
+        st.info("Đã chọn tệp mới. Bấm **Tạo báo cáo kiểm tra** để xem kết quả.")
+        return
+    if st.session_state["workbook_bytes"]:
+        _render_results()
 
 
-def _apply_compact_styles() -> None:
-    st.markdown(
-        """
-        <style>
-        .stMainBlockContainer {
-            padding-top: 3.75rem;
-            padding-bottom: 1.5rem;
-        }
-        [data-testid="stMarkdown"] h2 {
-            font-size: 1.8rem;
-            font-family: "Segoe UI", Arial, "Noto Sans", sans-serif;
-            font-weight: 700;
-            line-height: 1.45;
-            letter-spacing: normal;
-            overflow: visible;
-            padding: 0.3rem 0 0.1rem;
-            margin: 0 0 0.1rem;
-        }
-        [data-testid="stFileUploader"] {
-            margin-top: -0.25rem;
-        }
-        [data-testid="stFileUploaderDropzone"] {
-            min-height: 5.25rem;
-            padding: 0.75rem 1rem;
-        }
-        [data-testid="stFileUploaderDropzoneInstructions"] > div > span {
-            font-size: 0.9rem;
-        }
-        [data-testid="stMetric"] {
-            border: 1px solid rgba(128, 128, 128, 0.22);
-            border-radius: 0.55rem;
-            padding: 0.55rem 0.75rem;
-        }
-        [data-testid="stMetricLabel"] {
-            min-height: auto;
-        }
-        [data-testid="stMetricValue"] {
-            font-size: 1.65rem;
-            line-height: 1.25;
-        }
-        [data-testid="stAlert"] {
-            padding: 0;
-        }
-        [data-testid="stAlertContainer"] {
-            padding: 0.65rem 0.85rem;
-        }
-        [data-testid="stVerticalBlock"] {
-            gap: 0.65rem;
-        }
-        header,
-        [data-testid="stHeader"],
-        [data-testid="stToolbar"],
-        [data-testid="stToolbarActions"],
-        [data-testid="stHeaderNav"],
-        .stAppHeader,
-        .stAppToolbar,
-        #MainMenu,
-        footer,
-        a[href*="github.com"] {
-            visibility: hidden !important;
-            display: none !important;
-            height: 0 !important;
-            margin: 0 !important;
-            padding: 0 !important;
-        }
-        [data-testid="stSidebar"] {
-            background-color: #F8FAFC;
-        }
-        [data-testid="stSidebar"] [data-testid="stMarkdown"] h3 {
-            font-size: 1.15rem;
-            color: #1F4E78;
-            font-weight: 700;
-            margin-bottom: 0.15rem;
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
+def _apply_styles() -> None:
+    st.markdown(f"<style>{STYLES_PATH.read_text(encoding='utf-8')}</style>", unsafe_allow_html=True)
+
+
+def _audit_log_details(filename: str, outputs: AuditOutputs, seconds: float) -> str:
+    """Chi tiết nhật ký: tên tệp Word và số liệu vận hành; không chứa nội dung báo cáo."""
+    differences = sum(1 for item in outputs.attention_items if item.severity == "Sai lệch")
+    reviews = sum(1 for item in outputs.attention_items if item.severity == "Cần xem xét")
+    return (
+        f"{filename}; {len(outputs.tables)} bảng; {differences} sai lệch; {reviews} cần xem xét; "
+        f"{seconds:.1f} giây"
     )
-
-
-def _render_sidebar_guide() -> None:
-    with st.sidebar:
-        st.markdown("### 📖 Hướng dẫn 10 bước")
-        st.caption("Quy trình kiểm tra BCTC cho kiểm toán viên")
-
-        guide_steps = [
-            ("1. Chuẩn bị tệp nguồn", "Sử dụng tệp Báo cáo tài chính định dạng Word `.docx` rõ ràng."),
-            ("2. Tải tệp lên ứng dụng", "Kéo thả tệp `.docx` vào vùng tải lên ở giao diện chính hoặc nhấn chọn file."),
-            ("3. Tự động trích xuất", "Hệ thống tự động đọc bảng và lập báo cáo ngay khi tải tệp lên."),
-            ("4. Nhận diện Thông tư", "Tự động nhận diện chế độ kế toán (TT 200 / TT 133) và áp dụng RulePack."),
-            ("5. Xem tổng quan kết quả", "Theo dõi tổng số **🔴 Sai lệch**, **🟡 Cần xem xét** và danh sách bảng bị ảnh hưởng."),
-            ("6. Tải xuống kết quả", "Nhấn **Tải xuống Word và Excel** (hoặc tải từng file XLSX / DOCX)."),
-            ("7. Thứ tự Sheet Excel", "Các sheet có số liệu (`00_Tong_hop`, BS, PL, CF, TM) xếp trước; chữ ký/thông tin xếp sau."),
-            ("8. Màu sắc Tab Sheet", "Tab **🔴 Đỏ sẫm (`#C00000`)**: Sai lệch; **🟡 Vàng (`#FFC000`)**: Cần xem xét; **🟢 Xanh (`#70AD47`)**: Khớp."),
-            ("9. Điều hướng nhanh Excel", "Dùng ô điều hướng A1/A2/B2 và phím tắt `Ctrl + Page Up/Down` để chuyển sheet."),
-            ("10. Rà soát Word Comment", "Mở file Word kết quả để xem ghi chú comment tự động đánh dấu vị trí chênh lệch."),
-        ]
-
-        with st.expander("📋 Danh sách 10 bước chi tiết", expanded=True):
-            for step_title, step_desc in guide_steps:
-                st.markdown(
-                    f"<div style='margin-bottom: 0.45rem; padding: 0.45rem 0.6rem; background: #FFFFFF; "
-                    f"border: 1px solid #E2E8F0; border-radius: 0.4rem; box-shadow: 0 1px 2px rgba(0,0,0,0.02);'>"
-                    f"<strong style='color: #1F4E78; font-size: 0.85rem;'>{step_title}</strong><br/>"
-                    f"<span style='color: #475569; font-size: 0.78rem; line-height: 1.3;'>{step_desc}</span>"
-                    f"</div>",
-                    unsafe_allow_html=True,
-                )
-
-        st.markdown(
-            """
-            <div style="margin-top: 0.5rem;">
-                <a href="https://wordnumcompareapp2-h4qbe8uc3ifcvpnwjldg7t.streamlit.app/" target="_blank" rel="noopener noreferrer" 
-                   style="display: block; text-align: center; padding: 0.5rem; background: #EFF6FF; color: #1D4ED8; 
-                          font-weight: 600; font-size: 0.82rem; border-radius: 0.45rem; border: 1px solid #BFDBFE; text-decoration: none;
-                          box-shadow: 0 1px 2px rgba(0,0,0,0.03);">
-                   🌐 Đối chiếu số với bản dịch ↗
-                </a>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
 
 
 def _checked_output_stem(filename: str) -> str:
     source_stem = Path(filename or "bao_cao.docx").stem.strip()
     return f"{source_stem or 'bao_cao'} checked"
-
-
-def _render_sequential_download_button(
-    checked_stem: str,
-    workbook_bytes: bytes,
-    commented_docx_bytes: bytes,
-) -> None:
-    word_data = b64encode(commented_docx_bytes).decode("ascii")
-    excel_data = b64encode(workbook_bytes).decode("ascii")
-    word_name = b64encode(f"{checked_stem}.docx".encode("utf-8")).decode("ascii")
-    excel_name = b64encode(f"{checked_stem}.xlsx".encode("utf-8")).decode("ascii")
-    st.components.v1.html(
-        f"""
-        <button id="download-both" type="button">Tải xuống Word và Excel</button>
-        <script>
-        const button = document.getElementById("download-both");
-        const decodeName = value => new TextDecoder().decode(
-            Uint8Array.from(atob(value), character => character.charCodeAt(0))
-        );
-        const download = (data, mime, encodedName) => {{
-            const bytes = Uint8Array.from(atob(data), character => character.charCodeAt(0));
-            const url = URL.createObjectURL(new Blob([bytes], {{type: mime}}));
-            const link = document.createElement("a");
-            link.href = url;
-            link.download = decodeName(encodedName);
-            document.body.appendChild(link);
-            link.click();
-            link.remove();
-            window.setTimeout(() => URL.revokeObjectURL(url), 10000);
-        }};
-        button.addEventListener("click", async () => {{
-            button.disabled = true;
-            download("{word_data}",
-                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                "{word_name}");
-            await new Promise(resolve => window.setTimeout(resolve, 700));
-            download("{excel_data}",
-                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                "{excel_name}");
-            button.disabled = false;
-        }});
-        </script>
-        <style>
-        html, body {{ margin: 0; padding: 0; background: transparent; }}
-        #download-both {{
-            width: 100%; height: 40px; padding: 0 0.75rem;
-            color: white; background: linear-gradient(135deg, #1F4E78 0%, #2563EB 100%);
-            border: none; border-radius: 0.5rem;
-            font: 600 0.95rem/1.2 "Segoe UI", Arial, sans-serif; cursor: pointer;
-            box-shadow: 0 2px 6px rgba(31, 78, 120, 0.22);
-            transition: all 0.2s ease;
-        }}
-        #download-both:hover {{ opacity: 0.92; box-shadow: 0 4px 10px rgba(31, 78, 120, 0.35); }}
-        #download-both:disabled {{ cursor: wait; opacity: 0.65; }}
-        </style>
-        """,
-        height=41,
-        scrolling=False,
-    )
 
 
 def _init_session_state() -> None:
@@ -352,6 +180,7 @@ def _init_session_state() -> None:
         "attention_items": (),
         "regime_detection": None,
         "applied_rule_pack": None,
+        "coverage": None,
         "processed_filename": "",
         "processed_file_fingerprint": "",
     }
@@ -360,51 +189,174 @@ def _init_session_state() -> None:
             st.session_state[key] = value
 
 
-def _render_attention_summary(attention_items: tuple, regime_detection=None, applied_rule_pack=None) -> None:
-    st.subheader("Các vấn đề cần chú ý")
-    _render_rule_pack_status(regime_detection, applied_rule_pack)
+SEVERITY_DIFFERENCE = "Sai lệch"
+SEVERITY_REVIEW = "Cần xem xét"
+WORD_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+EXCEL_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
-    differences = [item for item in attention_items if item.severity == "Sai lệch"]
-    reviews = [item for item in attention_items if item.severity == "Cần xem xét"]
-    affected_tables = len({item.table_index for item in attention_items})
 
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.metric("🔴 Sai lệch", len(differences))
-    with col2:
-        st.metric("🟡 Cần xem xét", len(reviews))
-    with col3:
-        st.metric("📋 Bảng bị ảnh hưởng", affected_tables)
+def _render_results() -> None:
+    """Vùng kết quả gọn: một dòng kết luận, nút tải, danh sách sai lệch, nhóm cần xem xét thu gọn."""
+    attention_items = st.session_state["attention_items"]
+    regime_detection = st.session_state["regime_detection"]
+    applied_rule_pack = st.session_state["applied_rule_pack"]
+    coverage = st.session_state["coverage"]
+    differences = [item for item in attention_items if item.severity == SEVERITY_DIFFERENCE]
+    reviews = [item for item in attention_items if item.severity == SEVERITY_REVIEW]
+    rules_applied = applied_rule_pack is not None and applied_rule_pack.version != "none"
+    checked_stem = _checked_output_stem(st.session_state["processed_filename"])
 
-    if attention_items:
-        tab_diff, tab_rev = st.tabs([
-            f"🔴 Sai lệch ({len(differences)})",
-            f"🟡 Cần xem xét ({len(reviews)})",
-        ])
+    with st.container(border=True, key="result_box"):
+        verdict_column, word_column, excel_column = st.columns(
+            [3, 1.3, 0.9],
+            vertical_alignment="center",
+        )
+        with verdict_column:
+            st.markdown(
+                _verdict_html(differences, reviews, rules_applied, coverage),
+                unsafe_allow_html=True,
+            )
+        with word_column:
+            if st.session_state["commented_docx_bytes"]:
+                st.download_button(
+                    "Tải Word có comment",
+                    data=st.session_state["commented_docx_bytes"],
+                    file_name=f"{checked_stem}.docx",
+                    mime=WORD_MIME,
+                    type="primary",
+                    width="stretch",
+                )
+        with excel_column:
+            if st.session_state["workbook_bytes"]:
+                st.download_button(
+                    "Excel chi tiết",
+                    data=st.session_state["workbook_bytes"],
+                    file_name=f"{checked_stem}.xlsx",
+                    mime=EXCEL_MIME,
+                    width="stretch",
+                    help="Workbook có công thức kiểm tra cho từng bảng, dùng khi cần truy vết.",
+                )
+        st.markdown(_scope_line_html(coverage, applied_rule_pack), unsafe_allow_html=True)
+        if not rules_applied:
+            _render_rule_pack_status(regime_detection, applied_rule_pack)
+        else:
+            with st.expander("Chi tiết nhận diện Thông tư và phạm vi kiểm tra"):
+                _render_rule_pack_status(regime_detection, applied_rule_pack)
+                _render_coverage_caption(coverage)
 
-        def _render_item_table(items_list: list) -> None:
-            if not items_list:
-                st.info("Không có ghi nhận trong danh mục này.")
-                return
-            issue_rows = [
-                {
-                    "Mức độ": "🔴 Sai lệch" if item.severity == "Sai lệch" else "🟡 Cần xem xét",
-                    "Bảng": item.table_index,
-                    "Nội dung bảng": item.table_title,
-                    "Loại bảng": item.table_type,
-                    "Vấn đề": item.message,
-                }
-                for item in items_list
-            ]
-            table_height = min(400, 38 * (len(issue_rows) + 1) + 4)
-            st.dataframe(issue_rows, width="stretch", height=table_height, hide_index=True)
+        if not st.session_state["tables"]:
+            st.info(
+                "Không tìm thấy bảng nào trong tệp. Kiểm tra lại tệp có phải BCTC trình bày số liệu dạng bảng."
+            )
+        if differences:
+            st.markdown(
+                '<div class="finding-section danger">Sai lệch</div>'
+                + "".join(_finding_row_html(item) for item in differences),
+                unsafe_allow_html=True,
+            )
+        if reviews:
+            with st.expander(
+                f"Cần xem xét ({len(reviews)}) — {_review_preview(reviews)}",
+                expanded=not differences,
+            ):
+                st.markdown(
+                    "".join(_finding_row_html(item) for item in reviews),
+                    unsafe_allow_html=True,
+                )
 
-        with tab_diff:
-            _render_item_table(differences)
-        with tab_rev:
-            _render_item_table(reviews)
+
+def _verdict_html(
+    differences: list[AuditAttentionItem],
+    reviews: list[AuditAttentionItem],
+    rules_applied: bool,
+    coverage: AuditCoverage | None,
+) -> str:
+    chips: list[str] = []
+    if differences:
+        chips.append(f'<span class="verdict-chip danger">{len(differences)} sai lệch</span>')
+    if reviews:
+        chips.append(f'<span class="verdict-chip warning">{len(reviews)} cần xem xét</span>')
+    if not chips:
+        fully_covered = rules_applied and coverage is not None and not coverage.review_tables
+        chips.append(
+            '<span class="verdict-chip success">Không phát hiện sai lệch</span>'
+            if fully_covered
+            else '<span class="verdict-chip warning">Không phát hiện sai lệch trong phạm vi đã kiểm tra</span>'
+        )
+    return f'<div class="verdict-row">{"".join(chips)}</div>'
+
+
+def _scope_line_html(coverage: AuditCoverage | None, applied_rule_pack) -> str:
+    parts: list[str] = []
+    if coverage is not None and coverage.total_tables:
+        parts.append(f"Đã kiểm tra {coverage.checked_tables}/{coverage.total_tables} bảng")
+        if coverage.review_tables:
+            parts.append(f"{coverage.review_tables} bảng cần tự rà soát")
+    if applied_rule_pack is not None and applied_rule_pack.version != "none":
+        parts.append(escape(applied_rule_pack.display_name))
+    return f'<div class="scope-line">{" · ".join(parts)}</div>' if parts else ""
+
+
+def _finding_row_html(item: AuditAttentionItem) -> str:
+    kind = "danger" if item.severity == SEVERITY_DIFFERENCE else "warning"
+    detail = item.detail
+    title = escape(item.location or item.table_title)
+    tag_parts = [f"Bảng {item.table_index}", item.statement_label, item.currency]
+    tag = escape(" · ".join(part for part in tag_parts if part))
+    if detail is None:
+        meta = escape(item.message)
+        values = ""
+        difference = "—"
     else:
-        st.success("Không phát hiện sai lệch hoặc trường hợp cần xem xét trong các bảng đã xử lý.")
+        meta = escape(" · ".join(part for part in (detail.check, detail.period, detail.note) if part))
+        values = escape(
+            " · ".join(
+                f"{label} {format_amount(value)}"
+                for label, value in (
+                    (detail.first_label, detail.first_value),
+                    (detail.second_label, detail.second_value),
+                )
+                if value is not None
+            )
+        )
+        if detail.difference is not None:
+            difference = escape(format_amount(detail.difference))
+        elif detail.first_value is not None:
+            difference = "Sai dấu"
+        else:
+            difference = "—"
+    values_html = f'<div class="finding-values">{values}</div>' if values else ""
+    return (
+        f'<div class="finding-row">'
+        f'<div class="finding-main">'
+        f'<div class="finding-title">{title}</div>'
+        f'<div class="finding-meta"><span class="finding-tag">{tag}</span>{meta}</div>'
+        f"{values_html}</div>"
+        f'<div class="finding-diff {kind}">{difference}</div>'
+        f"</div>"
+    )
+
+
+def _review_preview(reviews: list[AuditAttentionItem]) -> str:
+    """Tóm tắt một dòng cho tiêu đề nhóm cần xem xét (tối đa hai mục)."""
+    labels = [
+        item.detail.check if item.detail and item.detail.check else (item.location or item.table_title)
+        for item in reviews
+    ]
+    unique_labels = list(dict.fromkeys(labels))
+    preview = " · ".join(unique_labels[:2])
+    return preview + (" …" if len(unique_labels) > 2 else "")
+
+
+def _render_coverage_caption(coverage: AuditCoverage | None) -> None:
+    if coverage is None or not coverage.total_tables:
+        return
+    st.caption(
+        f"Phạm vi kiểm tra tự động: {coverage.checked_tables}/{coverage.total_tables} bảng đã kiểm tra; "
+        f"{coverage.review_tables} bảng chưa nhận diện được cấu trúc tổng, cần tự rà soát; "
+        f"{coverage.not_applicable_tables} bảng thông tin không áp dụng kiểm tra số học. "
+        "Chi tiết từng bảng xem tại sheet 00_Tong_hop của file Excel."
+    )
 
 
 def _render_rule_pack_status(regime_detection, applied_rule_pack) -> None:

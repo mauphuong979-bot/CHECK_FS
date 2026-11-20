@@ -60,8 +60,9 @@ class WordCommentReportTest(unittest.TestCase):
         comments = list(reopened.comments)
         self.assertEqual(len(comments), 1)
         self.assertEqual(comments[0].text, "Không tìm thấy.")
+        self.assertEqual(comments[0].author, "CHECK_FS")
 
-    def test_formats_difference_and_review_comments_by_category(self):
+    def test_separates_difference_and_review_comments_by_author_and_prefix(self):
         with TemporaryDirectory() as temp_dir:
             source_path = Path(temp_dir) / "source.docx"
             document = Document()
@@ -73,28 +74,46 @@ class WordCommentReportTest(unittest.TestCase):
                 source_path,
                 [
                     WordCommentTarget(
-                        1, 0, 0, "Đối chiếu TM–BS: Có chênh lệch 10 VND.",
-                        WordCommentCategory.DIFFERENCE,
-                    ),
-                    WordCommentTarget(
                         1, 0, 0, "Cần kiểm toán viên xác minh.",
                         WordCommentCategory.REVIEW,
+                    ),
+                    WordCommentTarget(
+                        1, 0, 0, "Đối chiếu TM–BS: chênh lệch 10.",
+                        WordCommentCategory.DIFFERENCE,
                     ),
                 ],
             )
 
-        comment = list(Document(BytesIO(output)).comments)[0]
-        self.assertEqual(
-            comment.text,
-            "Đối chiếu TM–BS: Có chênh lệch 10 VND.\n\nCần kiểm toán viên xác minh.",
-        )
-        runs = [run for paragraph in comment.paragraphs for run in paragraph.runs]
-        self.assertEqual(str(runs[0].font.color.rgb), "0563C1")
-        self.assertTrue(runs[0].bold)
-        self.assertEqual(str(runs[1].font.color.rgb), "C00000")
-        self.assertTrue(runs[1].bold)
-        self.assertEqual(str(runs[-1].font.color.rgb), "C65911")
+        comments = list(Document(BytesIO(output)).comments)
+        self.assertEqual(len(comments), 2)
+        difference, review = comments
+        self.assertEqual(difference.author, "CHECK_FS - Sai lệch")
+        self.assertEqual(difference.text, "[SAI LỆCH] Đối chiếu TM–BS: chênh lệch 10.")
+        difference_runs = [run for paragraph in difference.paragraphs for run in paragraph.runs]
+        self.assertEqual(str(difference_runs[0].font.color.rgb), "C00000")
+        self.assertTrue(difference_runs[0].bold)
+        self.assertEqual(str(difference_runs[1].font.color.rgb), "0563C1")
+        self.assertEqual(str(difference_runs[-1].font.color.rgb), "C00000")
+        self.assertEqual(review.author, "CHECK_FS - Cần xem xét")
+        self.assertEqual(review.text, "[CẦN XEM XÉT] Cần kiểm toán viên xác minh.")
+        review_runs = [run for paragraph in review.paragraphs for run in paragraph.runs]
+        self.assertEqual(str(review_runs[-1].font.color.rgb), "C65911")
 
+    def test_empty_row_does_not_borrow_cell_from_other_rows(self):
+        with TemporaryDirectory() as temp_dir:
+            source_path = Path(temp_dir) / "source.docx"
+            document = Document()
+            table = document.add_table(rows=2, cols=2)
+            table.cell(0, 0).text = "Tiêu đề"
+            table.cell(0, 1).text = "Số cuối năm"
+            document.save(source_path)
+
+            output = build_commented_docx(
+                source_path,
+                [WordCommentTarget(1, 1, 1, "Không neo.", WordCommentCategory.REVIEW)],
+            )
+
+        self.assertEqual(list(Document(BytesIO(output)).comments), [])
 
 if __name__ == "__main__":
     unittest.main()

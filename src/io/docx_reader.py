@@ -18,6 +18,7 @@ from src.normalization.text_cleaner import clean_text
 
 def read_docx_tables(path: str | Path) -> list[ExtractedTable]:
     document = Document(str(path))
+    style_font_cache: StyleFontCache = {}
     tables: list[ExtractedTable] = []
     last_paragraph = ""
     recent_paragraphs: list[str] = []
@@ -73,7 +74,7 @@ def read_docx_tables(path: str | Path) -> list[ExtractedTable]:
                 statement_type=statement_type,
                 title_hint=title_hint,
                 context_hints=context_hints,
-                cell_presentations=_table_cell_presentations(table),
+                cell_presentations=_table_cell_presentations(table, style_font_cache),
                 merged_ranges=_table_merged_ranges(table),
                 column_widths=_table_column_widths(table),
             )
@@ -113,25 +114,37 @@ def _paragraph_numbering(paragraph: Paragraph) -> tuple[int, int] | None:
     return int(numbering.numId.val), int(level)
 
 
-def _table_cell_presentations(table: Table) -> dict[tuple[int, int], CellPresentation]:
+# Cache theo style id của paragraph trong phạm vi một lần đọc tài liệu: tra style qua
+# python-docx rất chậm (quét toàn bộ styles.xml) nếu lặp lại cho từng run.
+StyleFontCache = dict[str | None, dict[str, bool | None]]
+STYLE_FONT_PROPERTIES = ("bold", "italic", "underline")
+
+
+def _table_cell_presentations(
+    table: Table,
+    style_font_cache: StyleFontCache | None = None,
+) -> dict[tuple[int, int], CellPresentation]:
+    cache: StyleFontCache = {} if style_font_cache is None else style_font_cache
     presentations: dict[tuple[int, int], CellPresentation] = {}
     for row_idx, row in enumerate(table.rows):
         for col_idx, cell in enumerate(row.cells):
-            presentations[(row_idx, col_idx)] = _cell_presentation(cell)
+            presentations[(row_idx, col_idx)] = _cell_presentation(cell, cache)
     return presentations
 
 
-def _cell_presentation(cell) -> CellPresentation:
+def _cell_presentation(cell, style_font_cache: StyleFontCache | None = None) -> CellPresentation:
+    cache: StyleFontCache = {} if style_font_cache is None else style_font_cache
     runs = [run for paragraph in cell.paragraphs for run in paragraph.runs if clean_text(run.text)]
-    bold_values = [_resolved_run_property(run, "bold") for run in runs]
-    italic_values = [_resolved_run_property(run, "italic") for run in runs]
-    underline_values = [_resolved_run_property(run, "underline") for run in runs]
+    bold_values = [_resolved_run_property(run, "bold", cache) for run in runs]
+    italic_values = [_resolved_run_property(run, "italic", cache) for run in runs]
+    underline_values = [_resolved_run_property(run, "underline", cache) for run in runs]
     font_colors = [str(run.font.color.rgb) for run in runs if run.font.color.rgb is not None]
 
-    tc_properties = cell._tc.get_or_add_tcPr()
-    shading = tc_properties.find(qn("w:shd"))
+    # Chỉ đọc thuộc tính ô, không tạo thêm phần tử XML trong tài liệu nguồn.
+    tc_properties = cell._tc.tcPr
+    shading = tc_properties.find(qn("w:shd")) if tc_properties is not None else None
     fill_color = _xml_color(shading.get(qn("w:fill"))) if shading is not None else ""
-    borders = tc_properties.find(qn("w:tcBorders"))
+    borders = tc_properties.find(qn("w:tcBorders")) if tc_properties is not None else None
 
     return CellPresentation(
         bold=_uniform_true(bold_values),
@@ -148,12 +161,25 @@ def _cell_presentation(cell) -> CellPresentation:
     )
 
 
-def _resolved_run_property(run, property_name: str) -> bool | None:
+def _resolved_run_property(
+    run,
+    property_name: str,
+    style_font_cache: StyleFontCache | None = None,
+) -> bool | None:
     value = getattr(run, property_name)
     if value is not None:
         return bool(value)
-    style_font = run._parent.style.font if run._parent.style is not None else None
-    inherited = getattr(style_font, property_name, None) if style_font is not None else None
+    paragraph = run._parent
+    style_id = paragraph._p.style
+    cache: StyleFontCache = {} if style_font_cache is None else style_font_cache
+    if style_id not in cache:
+        style = paragraph.style
+        style_font = style.font if style is not None else None
+        cache[style_id] = {
+            name: getattr(style_font, name, None) if style_font is not None else None
+            for name in STYLE_FONT_PROPERTIES
+        }
+    inherited = cache[style_id].get(property_name)
     return bool(inherited) if inherited is not None else None
 
 

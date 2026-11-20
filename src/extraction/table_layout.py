@@ -37,19 +37,40 @@ def detect_period_columns_from_headers(
     if current_cols or prior_cols:
         return current_cols, prior_cols
 
-    distinct_years = {year for years in years_by_col.values() for year in years}
-    if len(distinct_years) < 2:
+    if not years_by_col:
         return [], []
-    latest_year = max(distinct_years)
-    earliest_year = min(distinct_years)
+
+    if len(years_by_col) == 1:
+        single_col = list(years_by_col.keys())[0]
+        return [single_col], []
+
+    rep_year_by_col = {col: max(years) for col, years in years_by_col.items()}
+    distinct_rep_years = set(rep_year_by_col.values())
+    if len(distinct_rep_years) < 2:
+        return [], []
+
+    latest_year = max(distinct_rep_years)
+    earliest_year = min(distinct_rep_years)
     return (
-        [col for col, years in years_by_col.items() if latest_year in years],
-        [col for col, years in years_by_col.items() if earliest_year in years],
+        [col for col, year in rep_year_by_col.items() if year == latest_year],
+        [col for col, year in rep_year_by_col.items() if year == earliest_year],
     )
 
 
 def detect_table_layout(table: ExtractedTable) -> TableLayout:
     code_col = detect_code_column(table)
+    header_current_cols, header_prior_cols = detect_period_columns_from_headers(table)
+    # Nhãn chỉ tiêu ở các dòng đầu (ví dụ "LNST lũy kế đến cuối năm trước") không phải
+    # header cột kỳ; chỉ nhận cột nằm sau cột mã số.
+    header_current_cols = [col for col in header_current_cols if col + 1 > code_col]
+    header_prior_cols = [col for col in header_prior_cols if col + 1 > code_col]
+    if header_current_cols and header_prior_cols:
+        return TableLayout(
+            code_col=code_col,
+            current_col=header_current_cols[0] + 1,
+            prior_col=header_prior_cols[0] + 1,
+        )
+
     numeric_columns = sorted(
         column for column in numeric_columns_for(table) if column > code_col
     )
@@ -58,6 +79,22 @@ def detect_table_layout(table: ExtractedTable) -> TableLayout:
             code_col=code_col,
             current_col=numeric_columns[0],
             prior_col=numeric_columns[1],
+        )
+
+    if header_current_cols:
+        curr_col = header_current_cols[0] + 1
+        prior_col = (header_prior_cols[0] + 1) if header_prior_cols else curr_col
+        return TableLayout(
+            code_col=code_col,
+            current_col=curr_col,
+            prior_col=prior_col,
+        )
+
+    if len(numeric_columns) == 1:
+        return TableLayout(
+            code_col=code_col,
+            current_col=numeric_columns[0],
+            prior_col=numeric_columns[0],
         )
 
     candidate_columns = [

@@ -119,12 +119,31 @@ class TableCheckResult:
 
 
 @dataclass(frozen=True)
+class FindingDetail:
+    """Số liệu có cấu trúc của một phát hiện để giao diện trình bày theo cột.
+
+    ``first_*``/``second_*`` là hai số được so sánh (ví dụ "Trình bày"/"Tính lại" hoặc
+    "CF"/"TM"); ``difference`` giữ nguyên độ chính xác Decimal, không làm tròn.
+    """
+
+    check: str
+    note: str = ""
+    period: str = ""
+    first_label: str = ""
+    first_value: Decimal | None = None
+    second_label: str = ""
+    second_value: Decimal | None = None
+    difference: Decimal | None = None
+
+
+@dataclass(frozen=True)
 class WordCommentTarget:
     table_index: int
     row_index: int
     column_index: int
     message: str
     category: WordCommentCategory = WordCommentCategory.GENERAL
+    detail: FindingDetail | None = None
 
 
 @dataclass(frozen=True)

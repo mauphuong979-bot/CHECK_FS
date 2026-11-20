@@ -35,6 +35,9 @@ class CrossPeriodRule:
     target_period: str
     source_period: str
     note: str
+    # True khi chênh lệch có thể hợp lý về nghiệp vụ (ví dụ chia lợi nhuận) nên chỉ là
+    # trường hợp cần kiểm toán viên xem xét, không kết luận sai lệch.
+    review_only: bool = False
 
 
 @dataclass(frozen=True)
@@ -128,7 +131,15 @@ CASH_FLOW_SIGN_RULES: tuple[SignRule, ...] = (
 
 CROSS_PERIOD_RULES: dict[StatementType, tuple[CrossPeriodRule, ...]] = {
     StatementType.BALANCE_SHEET_EQUITY: (
-        CrossPeriodRule("421a", "421", StatementType.BALANCE_SHEET_EQUITY, "current", "prior", "Khác với kỳ trước, cần xem lại có chia lãi hay không"),
+        CrossPeriodRule(
+            "421a",
+            "421",
+            StatementType.BALANCE_SHEET_EQUITY,
+            "current",
+            "prior",
+            "Khác với kỳ trước, cần xem lại có chia lãi hay không",
+            review_only=True,
+        ),
     ),
     StatementType.CASH_FLOW: (
         CrossPeriodRule("60", "110", StatementType.BALANCE_SHEET_ASSETS, "current", "prior", "Tiền đầu năm khác với BS"),

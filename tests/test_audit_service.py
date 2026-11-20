@@ -5,7 +5,13 @@ from src.reporting.excel_report import NOTE_SORT_SCORE, SUMMARY_SORT_STATUS
 from src.domain.audit_rules import EMPTY_RULE_PACK, TT200_RULE_PACK
 from src.domain.models import AccountingRegime, AccountingRegimeDetection, DetectionConfidence
 from src.domain.models import ExtractedTable, StatementType, WordCommentCategory, WordCommentTarget
+from src.domain.models import TableCheckResult
+from src.reporting.excel_report import AuditWorkbookReport
 from src.services.audit_service import create_audit_outputs, create_audit_report
+
+
+def _report(targets=(), results=()):
+    return AuditWorkbookReport(b"workbook", list(targets), tuple(results))
 
 
 class AuditServiceSortOptionsTest(unittest.TestCase):
@@ -29,10 +35,7 @@ class AuditServiceSortOptionsTest(unittest.TestCase):
         )
 
     @patch("src.services.audit_service.build_commented_docx", side_effect=RuntimeError("failed"))
-    @patch(
-        "src.services.audit_service.build_audit_workbook_with_comment_targets",
-        return_value=(b"workbook", []),
-    )
+    @patch("src.services.audit_service.build_audit_report", return_value=_report())
     @patch("src.services.audit_service.analyze_file", return_value=[])
     def test_word_failure_does_not_block_excel(self, analyze_file, build_workbook, build_word):
         outputs = create_audit_outputs("bao_cao.docx")
@@ -50,10 +53,7 @@ class AuditServiceSortOptionsTest(unittest.TestCase):
             DetectionConfidence.HIGH,
         ),
     )
-    @patch(
-        "src.services.audit_service.build_audit_workbook_with_comment_targets",
-        return_value=(b"workbook", []),
-    )
+    @patch("src.services.audit_service.build_audit_report", return_value=_report())
     @patch("src.services.audit_service.analyze_file", return_value=[])
     def test_applies_tt200_pack_only_after_detection(
         self, analyze_file, build_workbook, detector, build_word
@@ -65,12 +65,11 @@ class AuditServiceSortOptionsTest(unittest.TestCase):
 
     @patch("src.services.audit_service.build_commented_docx", return_value=b"word")
     @patch(
-        "src.services.audit_service.build_audit_workbook_with_comment_targets",
-        return_value=(
-            b"workbook",
+        "src.services.audit_service.build_audit_report",
+        return_value=_report(
             [
                 WordCommentTarget(
-                    1, 2, 1, "Kiểm tra số học: Có chênh lệch.",
+                    1, 0, 1, "Kiểm tra số học: Có chênh lệch.",
                     WordCommentCategory.DIFFERENCE,
                 ),
                 WordCommentTarget(
@@ -95,6 +94,28 @@ class AuditServiceSortOptionsTest(unittest.TestCase):
         self.assertEqual(outputs.attention_items[0].table_type, "Thuyết minh")
         self.assertEqual(outputs.attention_items[1].table_title, "Chưa phân loại")
         self.assertEqual(outputs.attention_items[1].table_type, "Chưa phân loại")
+        self.assertEqual(outputs.attention_items[0].location, "Tổng cộng")
+
+    @patch("src.services.audit_service.build_commented_docx", return_value=b"word")
+    @patch(
+        "src.services.audit_service.build_audit_report",
+        return_value=_report(
+            results=[
+                TableCheckResult(1, "Có rule nghiệp vụ", 3),
+                TableCheckResult(2, "Có kiểm tra", 1),
+                TableCheckResult(3, "Cần xem xét"),
+                TableCheckResult(4, "Không kiểm tra"),
+            ]
+        ),
+    )
+    @patch("src.services.audit_service.analyze_file", return_value=[])
+    def test_reports_check_coverage(self, analyze_file, build_report, build_word):
+        coverage = create_audit_outputs("bao_cao.docx").coverage
+
+        self.assertEqual(coverage.total_tables, 4)
+        self.assertEqual(coverage.checked_tables, 2)
+        self.assertEqual(coverage.review_tables, 1)
+        self.assertEqual(coverage.not_applicable_tables, 1)
 
 
 if __name__ == "__main__":

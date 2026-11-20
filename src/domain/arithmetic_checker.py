@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal
 
 from src.domain.audit_rules import ArithmeticRule
 from src.domain.models import TableValue, TableValueStatus
@@ -13,7 +13,6 @@ CALCULABLE_VALUE_STATUSES = {
     TableValueStatus.ZERO,
     TableValueStatus.DASH_ZERO,
 }
-CHECK_ROUND_QUANTUM = Decimal("0.01")
 
 
 @dataclass(frozen=True)
@@ -62,11 +61,8 @@ def calculate_same_table_arithmetic(
         return ArithmeticCheckValue(None, applicable=False)
     if review_codes or target is None:
         return ArithmeticCheckValue(None, tuple(dict.fromkeys(review_codes)))
-    difference = (target - total).quantize(
-        CHECK_ROUND_QUANTUM,
-        rounding=ROUND_HALF_UP,
-    )
-    return ArithmeticCheckValue(difference)
+    # Chênh lệch giữ nguyên độ chính xác Decimal; 0,01 vẫn là sai lệch.
+    return ArithmeticCheckValue(target - total)
 
 
 def _required_calculation_value(

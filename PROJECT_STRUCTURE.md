@@ -2,7 +2,7 @@
 
 > Tài liệu này là bản đồ kiến trúc của dự án. Người dùng và AI coding agent nên đọc tài liệu trước khi chỉnh sửa source code.
 
-- Ngày cập nhật gần nhất: 2026-09-29
+- Ngày cập nhật gần nhất: 2026-11-20
 - Repository root: `CHECK_FS`
 - Python version: Chưa xác định được từ repository (runtime dùng để rà soát: Python 3.13.13)
 - Entry point chính: `app.py`
@@ -27,12 +27,13 @@ Các chức năng cốt lõi hiện có:
 
 - Nhận diện chế độ kế toán ở cấp tài liệu theo viện dẫn Thông tư trong toàn bộ đoạn văn, sau đó mới dùng ký hiệu biểu mẫu làm bằng chứng cấu trúc dự phòng. Hiện registry có bộ rule đã xác nhận cho Thông tư 200/2014/TT-BTC; Thông tư 133/2016/TT-BTC và Thông tư 99/2025/TT-BTC được nhận diện để cảnh báo nhưng chưa áp rule nghiệp vụ khi chưa có `RulePack` tương ứng.
 - Service chọn `RulePack` trước khi tạo báo cáo. Nếu không xác định được, phát hiện nhiều Thông tư hoặc chưa có bộ rule đã đăng ký, hệ thống không mặc định dùng rule TT200 và không chạy đối chiếu Thuyết minh–BCTC phụ thuộc bộ rule.
+- Hỗ trợ đầy đủ Báo cáo tài chính năm đầu tiên / Báo cáo 1 kỳ (chỉ có 1 cột dữ liệu số): Tự động nhận diện tiêu đề khoảng thời gian dạng `Từ DD/MM/YYYY đến DD/MM/YYYY`, trích xuất chỉ tiêu BCTC cho các biểu mẫu PL, CF, BS 1 cột và thực hiện đối chiếu Thuyết minh–BCTC chính xác theo kỳ hiện tại mà không tạo cảnh báo thiếu số liệu hoặc cột kiểm tra trùng lặp.
 
 - Đọc bảng trong DOCX theo đúng thứ tự xen kẽ giữa đoạn văn và bảng.
 - Phân loại bảng thành BS tài sản, BS nguồn vốn, PL, CF, thuyết minh, thông tin chung, chữ ký hoặc chưa phân loại; các bảng mục lục, danh sách Ban Giám đốc, địa điểm kinh doanh và khối ký/đại diện được nhận diện là thông tin chung hoặc chữ ký thay vì rơi vào `Chưa phân loại`. Các bảng thông tin về thời gian khấu hao, kể cả mẫu chỉ có header `Năm`, nhiều nhóm tài sản và các khoảng như `5 - 7`; bảng một dòng so sánh đầu/cuối kỳ; bảng phân tách `Ngắn hạn`/`Dài hạn`; khối tiếp nối `Dự phòng phải thu`/`Giá trị thuần`; và bảng `Giao dịch với các bên liên quan` có cột `Bên liên quan`/`Mối quan hệ` được nhận diện là Thuyết minh ngay cả khi không có từ khóa tiền tệ. Rule bảng bên liên quan chạy trước nhận diện chữ ký để chức danh trong dữ liệu không làm sai phân loại.
 - Chuẩn hóa Unicode và nhận diện chuỗi số/ký hiệu số kế toán.
 - Kiểm tra công thức theo mã chỉ tiêu, dấu của một số chỉ tiêu CF và quan hệ giữa kỳ/báo cáo.
-- Mọi công thức kiểm tra chênh lệch được chuẩn hóa bằng `ROUND(...,2)` để hỗ trợ cả VND và ngoại tệ có hai chữ số thập phân. Logic Python dùng `Decimal` với `ROUND_HALF_UP` đến `0.01`; chỉ kết luận/comment khi chênh lệch sau làm tròn khác 0. Ô chênh lệch dùng định dạng hiển thị tối đa hai chữ số thập phân.
+- So sánh số học chính xác tuyệt đối: Python tính bằng `Decimal` (kể cả cộng dọc/ngang, rule theo mã, dấu, liên kỳ, đối chiếu TM–BCTC), không làm tròn và không có dung sai — chênh lệch 0,01 vẫn là sai lệch. Công thức Excel dùng `ROUND(...,n)` chỉ để loại nhiễu dấu phẩy động, với `n` = số chữ số thập phân lớn nhất của dữ liệu nguồn trong tài liệu (tối thiểu 2, tối đa 6), lưu theo từng lần tạo báo cáo bằng `ContextVar`. Bảng có số lẻ (ví dụ USD) hiển thị định dạng `#,##0.00`; bảng chỉ có số nguyên giữ `#,##0`.
 - Kiểm tra cộng dọc/cộng ngang đơn giản cho các bảng không áp dụng được rule nghiệp vụ; dòng tổng hỗ trợ các nhãn cụ thể như `Tổng cộng`, `Giá trị thuần`, `Doanh thu thuần`, `Số dư cuối năm/kỳ` và `Số cuối năm/kỳ`. Dòng có nhãn tổng rõ ràng vẫn được kiểm tra khi chỉ có một dòng thành phần. Subtotal không nhãn được nhận diện khi ô số in đậm có border hoặc có đường tổng mạnh `double/thick`; subtotal một dòng được hỗ trợ. Với nhóm `Trừ:`, cả hai subtotal được kiểm tra theo thành phần riêng và dòng `Doanh thu thuần` hoặc `Tổng cộng` được kiểm tra theo quan hệ subtotal trước trừ subtotal khoản giảm trừ. Với bảng biến động, phép kiểm tra cuối kỳ bao gồm dòng `Số đầu...`/`Số dư đầu...` gần nhất hoặc dòng chuyển tiếp như `Số cuối năm trước, đầu năm nay` trong vùng cộng. Bảng thuế có các cột `Số đầu năm`, `Số phải nộp`, `Số đã nộp, khấu trừ`, `Số cuối năm` được kiểm tra từng dòng theo `Cuối = Đầu + Phải nộp - ABS(Đã nộp, khấu trừ)`, chấp nhận cả style trình bày dấu dương, dấu âm và dấu gạch ngang. Bảng tính thuế TNDN được kiểm tra theo chuỗi `Lợi nhuận trước thuế → Thu nhập chịu thuế → Thu nhập tính thuế → Chi phí thuế hiện hành`; các khoản điều chỉnh giảm/chuyển lỗ dùng `ABS()`, hai khối `Trong đó` được cộng theo chi tiết và chi phí thuế hiện hành được cộng từ các dòng thuế thành phần khi có đủ dữ liệu. Khối tiếp nối phải thu kiểm tra liên bảng theo `Giá trị thuần = Tổng cộng ở bảng trước + Dự phòng`, kế thừa hai kỳ và loại bản sao giá trị do merge trước khi lập công thức. Với bảng tài sản cố định có đủ ba khối `Nguyên giá`, `Giá trị hao mòn` hoặc `Giá trị khấu hao`, `Giá trị còn lại`, số đầu/cuối năm của giá trị còn lại được đối chiếu với hai dòng cùng kỳ ở hai khối nguồn.
 - Bảng TM mô tả hợp đồng/khoản vay có nhiều trường như số/ngày hợp đồng, ngày đáo hạn, hạn mức cho vay, thời hạn, mục đích, lãi suất, tài sản thế chấp/đảm bảo nhưng không có dòng `Tổng cộng` được nhận diện là bảng thông tin trước bước sinh công thức, ghi trạng thái `Không kiểm tra`; `Số dư cuối kỳ` không bị hiểu sai là tổng của hạn mức hoặc metadata hợp đồng. Các bảng này cũng được loại khỏi đối chiếu TM–BCTC để không tạo cảnh báo thiếu số liệu khi không có tổng số dư theo chỉ tiêu.
 - Các bảng TM thông tin khác gồm bảng thời gian/số năm khấu hao, kể cả mẫu chỉ có cột `Năm` và nhiều khoảng thời gian theo nhóm tài sản; disclosure nguyên giá TSCĐ đã khấu hao hết nhưng vẫn còn sử dụng; thuyết minh một giá trị tài sản thế chấp/cầm cố; và bảng hai kỳ chỉ có một dòng dữ liệu đều được ghi `Không kiểm tra`, không tạo comment số học hoặc đối chiếu thủ công. Bảng nhiều dòng chưa rõ nhưng không khớp các mẫu này vẫn là `Cần xem xét`.
@@ -40,9 +41,10 @@ Các chức năng cốt lõi hiện có:
 - Bảng danh sách/giao dịch bên liên quan không cần đối chiếu và bảng nghĩa vụ tiền thuê tương lai được loại khỏi matcher BCTC. Sheet chi tiết hiển thị `Không áp dụng đối chiếu BCTC cho bảng này`, cột trạng thái đối chiếu tại `00_Tong_hop` ghi `Không áp dụng` và không tạo comment Word; kiểm tra cộng dọc độc lập của bảng tiền thuê vẫn được giữ nguyên.
 - Riêng bảng danh sách có cột `Bên liên quan`/`Mối quan hệ` hiển thị cả Nội dung bảng và Loại bảng là `Giao dịch với các bên liên quan`; kiểu xử lý nội bộ vẫn là Thuyết minh để giữ tương thích với sheet và pipeline hiện hữu.
 - Bảng `Chưa phân loại` nhưng không có giá trị số kế toán ở các cột dữ liệu được ghi `Không kiểm tra` và không tạo comment Word; nếu có giá trị số kế toán thì vẫn giữ `Cần xem xét` để tránh che mất dữ liệu tài chính chưa có rule.
-- Tra cứu và đối chiếu bảng Thuyết minh với chỉ tiêu BS/PL/CF theo tham chiếu, tên và giá trị; giữ danh sách ứng viên khi chưa đủ cơ sở chọn duy nhất. Với mẫu Thông tư 200, bảng biến động `Vốn chủ sở hữu` đối chiếu riêng `Vốn góp của chủ sở hữu` với BS mã 411, `Lợi nhuận sau thuế chưa phân phối` với BS mã 421 và các dòng lợi nhuận trong năm với PL mã 60; hỗ trợ linh hoạt các tiêu đề dòng cuối kỳ như `Số cuối năm nay`, `Số cuối kỳ`; kỳ trước lấy dòng chuyển tiếp `Số cuối năm trước, đầu năm nay`, không lấy `Số đầu năm trước`. Bảng thông tin thuần túy và bảng biến động thuế (`Số đầu năm`, `Số phải nộp`, `Số đã nộp, khấu trừ`, `Số cuối năm`) được ghi `Không áp dụng` và không tạo comment đối chiếu. Bảng có tiêu đề rõ ràng cùng dòng `Tổng cộng` nhưng không tìm được chỉ tiêu BCTC vẫn ghi `Không tìm thấy chỉ tiêu BCTC` trong Excel và tạo comment Word tại ô tổng hai kỳ để kiểm toán viên xác minh; bảng không có căn cứ tổng/đích rõ ràng không tạo comment chung chung. Phép đối chiếu phân cấp mức độ tin cậy (`is_high_confidence`): các kết quả ghép nối suy luận (fallback) hoặc phép đối chiếu phát hiện chênh lệch bằng đúng số liệu của một ô thành phần khác trong cùng bảng (Sanity Check `_is_component_difference`) được tự động gắn mức độ `Cần xem xét` (màu cam/Category `REVIEW`) thay vì khẳng định `Có sai lệch` (màu đỏ/Category `DIFFERENCE`).
-- Nhận diện định dạng dấu phân cách số bất thường so với đa số trong bảng.
-- Tạo workbook gồm sheet `00_Tong_hop` và một sheet chi tiết cho mỗi bảng. Cột C/D lần lượt là `Nội dung bảng` và `Loại bảng`; giao diện Streamlit dùng chung helper nhãn với hai cột này. `00_Tong_hop` có cột `Trạng thái đối chiếu BCTC`; từng sheet Thuyết minh đặt khối đối chiếu dọc ngay dưới dữ liệu/kiểm tra và căn giá trị BCTC, chênh lệch theo đúng cột kỳ của TM.
+- Tra cứu và đối chiếu bảng Thuyết minh với chỉ tiêu BS/PL/CF theo tham chiếu, tên và giá trị; giữ danh sách ứng viên khi chưa đủ cơ sở chọn duy nhất. Với mẫu Thông tư 200, bảng biến động `Vốn chủ sở hữu` đối chiếu riêng `Vốn góp của chủ sở hữu` với BS mã 411, `Lợi nhuận sau thuế chưa phân phối` với BS mã 421 và các dòng lợi nhuận trong năm với PL mã 60; hỗ trợ linh hoạt các tiêu đề dòng cuối kỳ như `Số cuối năm nay`, `Số cuối kỳ`; kỳ trước lấy dòng chuyển tiếp `Số cuối năm trước, đầu năm nay`, không lấy `Số đầu năm trước`. Bảng thông tin thuần túy và bảng biến động thuế (`Số đầu năm`, `Số phải nộp`, `Số đã nộp, khấu trừ`, `Số cuối năm`) được ghi `Không áp dụng` và không tạo comment đối chiếu. Bảng có tiêu đề rõ ràng cùng dòng `Tổng cộng` nhưng không tìm được chỉ tiêu BCTC vẫn ghi `Không tìm thấy chỉ tiêu BCTC` trong Excel và tạo comment Word tại ô tổng hai kỳ để kiểm toán viên xác minh; bảng không có căn cứ tổng/đích rõ ràng không tạo comment chung chung. Phép đối chiếu phân cấp mức độ tin cậy: kết quả ghép suy luận hoặc chênh lệch bằng đúng một ô thành phần cùng cột kỳ của TM (`_is_component_difference`) được gắn `Cần xem xét` (Category `REVIEW`) thay vì `Sai lệch`. TM chỉ được đối chiếu với bộ BCTC cùng đơn vị tiền tệ (`extraction/table_currency.py`; bảng TM không ghi đơn vị kế thừa bảng liền trước), nên bản quy đổi VND không bị so với TM bằng USD. Bảng `Thông tin so sánh` (trình bày lại so với báo cáo năm trước) không đối chiếu theo kỳ.
+- Tạo workbook gồm sheet `00_Tong_hop` và một sheet chi tiết cho mỗi bảng. Cột C/D lần lượt là `Nội dung bảng` và `Loại bảng`; giao diện Streamlit dùng chung helper nhãn với hai cột này. Cấu trúc cột của `00_Tong_hop` được tinh giản và ưu tiên hiển thị kết quả kiểm tra trước: `STT bảng` (A), `Sheet chi tiết` (B), `Nội dung bảng` (C), `Loại bảng` (D), `Trạng thái` (E), `Tổng sai sót` (F), `Trạng thái đối chiếu BCTC` (G), `Ghi chú` (H), `Số phép kiểm tra` (I); loại bỏ hoàn toàn hai cột metadata kỹ thuật `Dòng` và `Cột`. Từng sheet Thuyết minh đặt khối đối chiếu dọc ngay dưới dữ liệu/kiểm tra và căn giá trị BCTC, chênh lệch theo đúng cột kỳ của TM.
+
+- Đăng nhập bắt buộc trước khi dùng ứng dụng: tài khoản (khởi tạo `VPSG` – Quản trị viên, `VPBD`, `user` – Người dùng) lưu tại worksheet `Users` của Google Sheet, mật khẩu băm PBKDF2-SHA256; dự phòng chỉ đọc bằng `[auth.users]` trong Streamlit Secrets khi chưa cấu hình/mất kết nối Google Sheet. Có ghi nhớ đăng nhập (cookie token ký HMAC, mặc định 30 ngày), đổi mật khẩu, tab `⚙️ Quản trị` (thêm/sửa/xóa tài khoản, hủy ghi nhớ, nhật ký sử dụng) và hộp thoại `📘 Hướng dẫn sử dụng`.
 
 Giới hạn quan trọng: `src/io/file_detector.py` liệt kê nhiều phần mở rộng được hỗ trợ, nhưng `src/services/audit_service.py` hiện chỉ chấp nhận DOCX và giao diện cũng chỉ cho tải DOCX. Không có chức năng đọc XLSX/XLSB/CSV/TXT/DOC/DOCM trong luồng chạy hiện tại.
 
@@ -56,6 +58,15 @@ CHECK_FS/
 ├── PROJECT_STRUCTURE.md
 ├── src/
 │   ├── __init__.py
+│   ├── auth/
+│   │   ├── __init__.py
+│   │   ├── gsheet.py
+│   │   ├── models.py
+│   │   ├── passwords.py
+│   │   ├── remember_token.py
+│   │   ├── settings.py
+│   │   ├── usage_log.py
+│   │   └── user_store.py
 │   ├── domain/
 │   │   ├── accounting_regime_detector.py
 │   │   ├── __init__.py
@@ -65,6 +76,7 @@ CHECK_FS/
 │   ├── extraction/
 │   │   ├── __init__.py
 │   │   ├── statement_classifier.py
+│   │   ├── table_currency.py
 │   │   ├── table_layout.py
 │   │   └── table_values.py
 │   ├── io/
@@ -94,8 +106,19 @@ CHECK_FS/
 │   │   └── audit_service.py
 │   └── ui/
 │       ├── __init__.py
-│       └── streamlit_app.py
+│       ├── admin_page.py
+│       ├── auth_gate.py
+│       ├── branding.py
+│       ├── browser_cookies.py
+│       ├── streamlit_app.py
+│       ├── styles.css
+│       └── user_guide.py
+├── .streamlit/
+│   ├── config.toml
+│   ├── secrets.toml          # cục bộ, bị .gitignore, không commit
+│   └── secrets.toml.example  # mẫu cấu hình đăng nhập/Google Sheet
 ├── tests/
+│   ├── test_auth.py
 │   ├── test_audit_rules.py
 │   ├── test_arithmetic_checker.py
 │   ├── test_number_parser.py
@@ -117,7 +140,8 @@ Các thành phần chính:
 - `src/services/`: điều phối use case phân tích tệp và tạo báo cáo.
 - `src/reporting/`: tạo báo cáo Excel/Word; palette và style Excel dùng chung nằm tại `excel_styles.py`.
 - `src/reconciliation/`: matching và đối chiếu Thuyết minh với chỉ tiêu BS/PL/CF.
-- `src/ui/`: giao diện, session state, tệp tạm và tải kết quả.
+- `src/auth/`: tài khoản, băm/xác minh mật khẩu, token ghi nhớ đăng nhập, đọc Streamlit Secrets, kết nối Google Sheet và nhật ký sử dụng. Không chứa logic nghiệp vụ kiểm toán.
+- `src/ui/`: giao diện (đăng nhập, thanh trên cùng, tab Kiểm tra/Quản trị, hướng dẫn), session state, tệp tạm và tải kết quả.
 - `tests/`: unit/regression test cho rule, parser, reader, đối chiếu, reporter, service và UI wiring.
 - Các tệp DOCX/XLSX/XLSM ở root: dữ liệu mẫu và sản phẩm đầu ra dùng để kiểm tra thủ công. Tài liệu này không ghi nội dung bên trong để tránh lộ dữ liệu báo cáo.
 - `.agents/`: thư mục hiện không có tệp ảnh hưởng đến ứng dụng.
@@ -133,7 +157,12 @@ Không tìm thấy migration, template giao diện, static assets, Dockerfile, c
 ```text
 app.py
 → src.ui.streamlit_app.main()
-→ _init_session_state()
+→ _apply_styles() nạp src/ui/styles.css
+→ src.ui.auth_gate.require_login(): đọc [auth] trong Secrets, tạo UserDirectory (Google Sheet hoặc Secrets),
+  thử ghi nhớ đăng nhập (cookie hoặc cầu nối ô nhập ẩn), nếu chưa đăng nhập thì vẽ màn hình đăng nhập và st.stop()
+→ _render_top_bar(): tiêu đề, 🌐 Đối chiếu số với bản dịch, ❓ Hướng dẫn, 👤 menu tài khoản
+→ tab 🔍 Kiểm tra BCTC (và ⚙️ Quản trị nếu là Quản trị viên)
+→ render_audit_workspace(): _init_session_state()
 → nhận một UploadedFile DOCX
 → dùng thứ tự STT bảng tăng dần mặc định cho `00_Tong_hop`
 → ghi vào NamedTemporaryFile
@@ -147,6 +176,7 @@ app.py
 → nếu người dùng chọn: word_comment_report neo comment vào DOCX gốc
 → trả list[ExtractedTable], bytes XLSX và bytes DOCX tùy chọn
 → xóa tệp tạm
+→ usage_log.log_event("Kiểm tra BCTC", tên tệp Word; số bảng/sai lệch/cần xem xét/thời gian)
 → lưu kết quả trong st.session_state
 → hiển thị số sai lệch/cần xem xét/bảng bị ảnh hưởng, danh sách vấn đề ưu tiên và nút tải kết quả
 → danh sách toàn bộ bảng chỉ hiển thị trong vùng mở rộng để phục vụ truy vết
@@ -192,6 +222,7 @@ Không có CLI command, API server, worker, scheduler hoặc script tác vụ đ
 - `CellBorder`, `CellPresentation`: metadata trình bày ô DOCX dùng để phục hồi định dạng trong sheet Thuyết minh.
 - `ExtractedTable`: bảng đã trích xuất, gồm dữ liệu/loại/ngữ cảnh, metadata trình bày theo ô, vùng gộp, độ rộng cột tương đối và hai property kích thước.
 - `TableCheckResult`: trạng thái, số phép kiểm tra/sai sót, ghi chú và tọa độ ô công thức.
+- `FindingDetail`: số liệu có cấu trúc của một phát hiện (loại kiểm tra, ghi chú, kỳ, hai số so sánh, chênh lệch `Decimal`); `WordCommentTarget.detail` mang giá trị này từ reporter tới service/UI.
 - `NoteMatchResult`: kết quả đối chiếu gồm nguồn, mã chỉ tiêu/mã Thuyết minh, giá trị hai kỳ, chênh lệch, trạng thái, kiểu khớp và điểm khớp.
 
 **Input/Output:** Các dataclass nhận dữ liệu Python thuần và truyền giữa reader, classifier, service, reporter và UI.
@@ -314,7 +345,7 @@ Không có CLI command, API server, worker, scheduler hoặc script tác vụ đ
 
 #### `src/reconciliation/note_matcher.py`
 
-**Vai trò:** Trích xuất chỉ tiêu BS/PL/CF, tìm ứng viên cho riêng bảng `StatementType.NOTE`, lấy giá trị hai kỳ và đối chiếu với dung sai làm tròn mặc định 1 đơn vị trình bày.
+**Vai trò:** Trích xuất chỉ tiêu BS/PL/CF, tìm ứng viên cho riêng bảng `StatementType.NOTE`, lấy giá trị hai kỳ và đối chiếu chính xác (dung sai mặc định bằng 0, chênh lệch không làm tròn); chỉ dùng chỉ tiêu BCTC cùng đơn vị tiền tệ với bảng TM.
 
 **Thành phần chính:** `reconcile_note_tables()`, `StatementItem`, registry mã cho TSCĐ hữu hình `221/222/223`, thuê tài chính `224/225/226`, vô hình `227/228/229`, BĐS đầu tư `230/231/232`; các helper xác định ba khối/kỳ/cột tổng và matcher tham chiếu Thuyết minh cho các bảng còn lại.
 
@@ -334,7 +365,9 @@ Không có CLI command, API server, worker, scheduler hoặc script tác vụ đ
 
 **Thành phần chính:**
 
-- Public: `build_audit_workbook()`, `save_audit_workbook()`.
+- Public: `build_audit_report()` (trả `AuditWorkbookReport` gồm bytes XLSX, `WordCommentTarget` và `TableCheckResult` từng bảng), `build_audit_workbook()`, `build_audit_workbook_with_comment_targets()`, `save_audit_workbook()`.
+- Phát hiện có cấu trúc: comment Excel tác giả `CHECK_FS_RULE` là sai lệch, `CHECK_FS_REVIEW` là cần xem xét; Word chỉ nhận comment của hai tác giả này (cảnh báo định dạng `CHECK_FS` và ô chỉ tô màu không chuyển sang Word). Nội dung comment ghi loại kiểm tra, số trình bày, số tính lại (kèm phạm vi dòng hoặc công thức mã chỉ tiêu) và chênh lệch. `Tổng sai sót` chỉ đếm ô sai lệch xác định.
+- Giảm comment rác: thiếu mã đích (ví dụ 410) tạo một comment cần xem xét cho mỗi rule; `Không tìm thấy số liệu TM`, ghép suy luận không có số tiền hoặc trỏ vào ô 0/gạch ngang, và bảng TM toàn số 0 không có dòng BCTC chỉ ghi Excel; mỗi bảng `Chưa tìm thấy chỉ tiêu BCTC` chỉ một comment. Cộng dọc có dòng `Trừ:` (không cần subtotal) tính `gốc − giảm trừ` khi hai phần cùng dấu, cộng thông thường khi phần giảm trừ đã trình bày âm. Rule liên kỳ `421a`/`421` là `review_only` (chênh lệch có thể do chia lợi nhuận). Hai quyết định nghiệp vụ này (421a chỉ cần xem xét; bảng TM toàn số 0 không có dòng BCTC không comment Word) đã được người dùng xác nhận ngày 2026-11-20.
 - Layout/lookup: sử dụng `extraction/table_layout.py` và `extraction/table_values.py`; reporter vẫn giữ alias nội bộ tương thích cho các helper cũ. Việc chọn bảng gần nhất vẫn nằm tại `_nearest_statement_tables()`.
 - Rule nghiệp vụ: arithmetic nội bảng dùng `domain/arithmetic_checker.py`; reporter còn điều phối `_write_business_checks()`, `_write_inline_arithmetic_check()`, `_write_inline_sign_check()`, `_write_inline_cross_period_check()`.
 - Kiểm tra bảng thuyết minh: `_write_vertical_note_checks()`, `_write_horizontal_note_checks()`.
@@ -359,13 +392,21 @@ Không có CLI command, API server, worker, scheduler hoặc script tác vụ đ
 
 **Public:** `TableLayout`, `detect_table_layout()`, `detect_code_column()`, `detect_period_columns_from_headers()`, `is_note_column()`, `numeric_columns_for()`, `select_period_column()`.
 
-`detect_period_columns_from_headers()` nhận diện kỳ theo nhãn `Năm nay/Năm trước`, `Số cuối năm/Số đầu năm` và theo năm trong tiêu đề khoảng ngày; năm lớn nhất là kỳ hiện tại, năm nhỏ nhất là kỳ trước. Reporter và note matcher dùng chung helper này để tránh đảo kỳ hoặc ghi hai kỳ vào cùng cột.
+`detect_table_layout()` chỉ nhận cột kỳ từ header nằm sau cột mã số, tránh nhầm nhãn chỉ tiêu như `LNST lũy kế đến cuối năm trước` thành header. `detect_period_columns_from_headers()` nhận diện kỳ theo nhãn `Năm nay/Năm trước`, `Số cuối năm/Số đầu năm` và theo năm trong tiêu đề khoảng ngày; năm lớn nhất là kỳ hiện tại, năm nhỏ nhất là kỳ trước. Reporter và note matcher dùng chung helper này để tránh đảo kỳ hoặc ghi hai kỳ vào cùng cột.
 
 **Phụ thuộc:** Domain models, `number_parser.py`, `text_cleaner.py`.
 
 **Được sử dụng bởi:** `src/reporting/excel_report.py`; được test trực tiếp trong `tests/test_table_layout.py`.
 
 **Lưu ý khi chỉnh sửa:** Heuristic hiện giữ tương thích: ưu tiên hai cột có dữ liệu số nằm sau cột mã; nếu không đủ thì chọn các cột không phải Thuyết minh; fallback có thể dùng chung một cột cho cả hai kỳ. Mọi thay đổi heuristic phải có regression test và xác minh với mẫu BCTC thực tế.
+
+#### `src/extraction/table_currency.py`
+
+**Vai trò:** Nhận diện đơn vị tiền tệ trình bày của bảng (`VND`, `USD`, `EUR`, `JPY`, `Triệu VND`, `Nghìn VND`) từ 4 dòng đầu hoặc dòng `Đơn vị tính`; `resolve_table_currencies()` cho bảng TM không ghi đơn vị kế thừa bảng liền trước.
+
+**Được sử dụng bởi:** `src/reconciliation/note_matcher.py`; test trong `tests/test_finding_accuracy.py`.
+
+**Lưu ý khi chỉnh sửa:** Chỉ trả kết quả khi nhận diện đúng một đơn vị; không suy diễn khi không có căn cứ.
 
 #### `src/extraction/table_values.py`
 
@@ -377,7 +418,7 @@ Không có CLI command, API server, worker, scheduler hoặc script tác vụ đ
 
 **Được sử dụng bởi:** `src/reporting/excel_report.py`; được test trực tiếp trong `tests/test_table_values.py`.
 
-**Lưu ý khi chỉnh sửa:** Lookup typed giữ `Decimal` và phân biệt `NUMBER`, `ZERO`, `DASH_ZERO`, `MISSING`, `INVALID`. Arithmetic rule nội bảng đã sử dụng lookup typed; adapter `table_value_lookup()` vẫn phục vụ rule dấu và đối chiếu chéo nên còn quy trạng thái không có số về `0.0` tại các luồng đó.
+**Lưu ý khi chỉnh sửa:** Lookup typed giữ `Decimal` và phân biệt `NUMBER`, `ZERO`, `DASH_ZERO`, `MISSING`, `INVALID`. Arithmetic rule nội bảng đã sử dụng lookup typed; adapter `table_value_lookup()` trả `Decimal` cho rule dấu và đối chiếu chéo, quy trạng thái không có số về `Decimal(0)` tại các luồng đó.
 
 #### `src/reporting/excel_styles.py`
 
@@ -389,29 +430,66 @@ Không có CLI command, API server, worker, scheduler hoặc script tác vụ đ
 
 **Lưu ý khi chỉnh sửa:** Thay đổi tại đây tác động đồng thời đến mọi loại sheet; phải chạy regression test workbook và đọc lại file XLSX sau khi lưu.
 
+#### `src/reporting/number_format.py`
+
+**Vai trò:** Định dạng số kiểu Việt Nam dùng chung cho comment Excel/Word và giao diện: `format_vietnamese_number()` giữ đủ phần thập phân khác 0 (không làm tròn), `format_amount()` đặt số âm trong ngoặc.
+
+**Được sử dụng bởi:** `src/reporting/excel_report.py`, `src/ui/streamlit_app.py`.
+
 #### `src/reporting/word_comment_report.py`
 
-**Vai trò:** Mở lại DOCX nguồn và thêm comment Word thật vào tọa độ bảng/dòng/cột do reporter Excel xác định. Comment ngắn gọn và phân biệt bằng tiền tố `Kiểm tra số học` hoặc `Đối chiếu TM–BCTC`; cảnh báo chỉ liên quan định dạng không được chuyển sang Word. Nhiều lý do tại cùng ô được gộp thành một comment; ô trống dùng ô có nội dung gần nhất mà không chèn ký tự vào báo cáo gốc.
+**Vai trò:** Mở lại DOCX nguồn và thêm comment Word thật vào tọa độ bảng/dòng/cột do reporter Excel xác định. Mỗi ô có tối đa một comment cho mỗi mức độ; tác giả comment là `CHECK_FS - Sai lệch` hoặc `CHECK_FS - Cần xem xét` (lọc được bằng Review → Show Markup → Specific People) và nội dung bắt đầu bằng `[SAI LỆCH]`/`[CẦN XEM XÉT]`. Ô trống chỉ dùng ô có chữ của cùng dòng; không lan sang dòng khác và không chèn ký tự vào báo cáo gốc.
 
 **Phụ thuộc:** `python-docx>=1.2`, `WordCommentTarget`.
 
 **Lưu ý khi chỉnh sửa:** Comment chỉ neo vào run có nội dung. Cần kiểm tra cấu trúc `comments.xml`, relationship và ba marker comment trong `document.xml`; render PDF/ảnh không đủ để xác minh comment.
 
+#### `src/auth/` (tài khoản và nhật ký)
+
+**Vai trò:** Hạ tầng đăng nhập độc lập với nghiệp vụ kiểm toán.
+
+**Thành phần chính:**
+
+- `passwords.py`: `hash_password()`/`verify_password()` PBKDF2-SHA256 (240.000 vòng, salt ngẫu nhiên); giá trị không có tiền tố `pbkdf2_sha256$` được coi là mật khẩu rõ do quản trị viên nhập tay vào Sheet và so sánh thời gian hằng; `password_problem()` (tối thiểu 6 ký tự).
+- `remember_token.py`: token `base64(username|hết_hạn).HMAC` ký bằng `auth.cookie_secret`, giá trị băm mật khẩu và `token_version`; đổi mật khẩu hoặc tăng `token_version` vô hiệu mọi token cũ mà không cần bảng phiên phía máy chủ.
+- `models.py`: `UserAccount` (`username`, `password_hash`, `role` `admin`/`user`, `token_version`), nhãn vai trò tiếng Việt, `username_problem()`.
+- `settings.py`: `load_auth_settings()` đọc `[auth]` (`cookie_secret`, `remember_days`, `[auth.users.<tên>]` gồm `password`, `role`); `read_secret_section()` trả rỗng khi chưa có secrets.
+- `gsheet.py`: `is_configured()`, `open_worksheet()` (tự tạo worksheet và seed), kết nối service account từ `[connections.gsheets]` cache bằng `st.cache_resource`, `normalize_private_key()`, `SheetUnavailableError` với thông điệp an toàn.
+- `user_store.py`: `UserDirectory` (authenticate, add/update/delete, change_password, revoke_remembered; giữ ít nhất một Quản trị viên, không tự xóa mình) trên `SheetUserBackend` (worksheet `Users`, cột `username|password_hash|role|token_version`, đọc cache 60 giây) hoặc `SecretsUserBackend` chỉ đọc. Lần đầu tạo worksheet, tài khoản trong Secrets được chép sang với mật khẩu đã băm.
+- `usage_log.py`: `log_event()` ghi worksheet `Logs` (`Thời gian|Người dùng|Sự kiện|Chi tiết`, giờ Việt Nam); `read_events()` cho trang Quản trị. Ghi tên tệp Word của lần kiểm tra theo yêu cầu người dùng (2026-11-20), không ghi nội dung báo cáo; không ghi sự kiện đăng nhập.
+
+**Lưu ý khi chỉnh sửa:** Không ghi mật khẩu rõ ra Sheet qua UI; không đưa token lên URL; mọi lỗi Google Sheet phải quy về `SheetUnavailableError` và thông báo tiếng Việt, không lộ chi tiết kỹ thuật.
+
+#### `src/ui/auth_gate.py`, `browser_cookies.py`, `admin_page.py`, `user_guide.py`, `branding.py`
+
+- `auth_gate.py`: `require_login()` trả `(UserAccount, UserDirectory)` hoặc vẽ màn hình đăng nhập (`login_box`, chọn tên đăng nhập, mật khẩu, ghi nhớ) rồi `st.stop()`; khóa thử lại 30 giây sau 5 lần sai trong phiên; tự đăng xuất phiên khi `token_version` thay đổi (đổi mật khẩu/hủy ghi nhớ) hoặc tài khoản bị xóa; `render_account_menu()` (đổi mật khẩu, đăng xuất); `sign_out()` xóa cookie và kết quả kiểm tra trong session.
+- `browser_cookies.py`: script đặt/xóa cookie `checkfs_remember` (`SameSite=Strict`, `Secure` khi HTTPS) và cầu nối đọc cookie trong trình duyệt rồi gõ vào ô nhập ẩn `checkfs_remember_bridge` cho máy chủ không chuyển cookie (Streamlit Community Cloud).
+- `admin_page.py`: `render_admin_page()` – trạng thái kết nối Google Sheet, thêm tài khoản, bảng sửa tài khoản (mật khẩu mới để trống = giữ nguyên, 💾 lưu, 🚪 hủy ghi nhớ, 🗑️ xóa có hộp thoại xác nhận), nhật ký sử dụng có lọc và tải CSV. Mọi thao tác bị vô hiệu khi chưa cấu hình Google Sheet.
+- `user_guide.py`: `show_user_guide()` mở hộp thoại 6 tab (Bắt đầu nhanh, Kiểm tra báo cáo, Đọc kết quả Excel, Rà soát Word, Tài khoản, Sự cố thường gặp); `guide_sections()` dùng cho test.
+- `branding.py`: `APP_TITLE`, `APP_ICON`, `TRANSLATION_COMPARE_URL`.
+
 #### `src/ui/streamlit_app.py`
 
 **Vai trò:** Giao diện Streamlit và vòng đời tệp upload.
 
-**Thành phần chính:** `main()`, `_init_session_state()`, hai mapping nhãn/khóa cho combobox sắp xếp.
+**Thành phần chính:** `main()`, `_render_top_bar()`, `render_audit_workspace(username)`, `_init_session_state()`, `_apply_styles()`, `_audit_log_details()`, `_render_results()`, `_verdict_html()`, `_scope_line_html()`, `_finding_row_html()`, `_review_preview()`.
 
 **Input:** Một `UploadedFile` DOCX.
 
-**Output:** Thông báo tiếng Việt, danh sách vấn đề cần chú ý và nút tải XLSX/DOCX.
+**Output:** Một khung kết quả gọn (`st-key-result_box`): dòng kết luận bằng nhãn `verdict-chip` (số sai lệch, số cần xem xét; không báo "Không phát hiện sai lệch" màu xanh khi còn bảng chưa kiểm tra hoặc chưa áp rule Thông tư), nút **Tải Word có comment** (primary) và **Excel chi tiết**, dòng phạm vi (`scope-line`), mục thu gọn chi tiết nhận diện Thông tư; danh sách **Sai lệch** dạng dòng (`finding-row`: nhãn dòng, thẻ `Bảng n · BS/PL/CF/TM · đơn vị tiền tệ`, loại kiểm tra và kỳ, hai số so sánh, chênh lệch căn phải) và nhóm **Cần xem xét** trong expander (mặc định thu gọn khi có sai lệch). Số hiển thị lấy từ `FindingDetail`, định dạng bằng `reporting/number_format.py`, không tách chữ từ câu thông báo. Đã bỏ nút tải đồng thời Word và Excel, ô metric, tab và hộp tóm tắt trùng lặp.
 
 **Phụ thuộc:** Streamlit, `NamedTemporaryFile`, `audit_service.py`.
 
 **Được sử dụng bởi:** `app.py`.
 
-**Lưu ý khi chỉnh sửa:** Tệp tạm được xóa trong `finally`; không làm mất cơ chế này. UI chỉ hiển thị thông báo chung khi có exception ngoài `UnsupportedFileError`, không lộ stack trace.
+**Lưu ý khi chỉnh sửa:** Tệp tạm được xóa trong `finally`; không làm mất cơ chế này. UI chỉ hiển thị thông báo chung khi có exception ngoài `UnsupportedFileError`, không lộ stack trace. Mọi nội dung lấy từ DOCX đưa vào HTML tự dựng phải qua `html.escape`. Không còn sidebar: hướng dẫn chuyển vào hộp thoại ❓, liên kết đối chiếu bản dịch nằm trên thanh trên cùng. Lỗi ngoài `UnsupportedFileError` được ghi `LOGGER.exception` phía máy chủ.
+
+#### `src/ui/styles.css`
+
+**Vai trò:** Stylesheet duy nhất của giao diện (được `_apply_styles()` nạp mỗi lượt chạy): token màu `--app-*` (navy `#1F4E78` đồng bộ `primaryColor`), font Inter, ẩn header/toolbar/sidebar Streamlit, thanh trên cùng (`st-key-top_bar`), thẻ mục (`section-title`, `st-key-upload_box`), Việt hóa vùng tải tệp, khung kết quả (`verdict-chip`, `scope-line`, `finding-*`, xếp một cột khi màn hình ≤ 640px), màn hình đăng nhập (`st-key-login_box`), màn hình chờ ghi nhớ đăng nhập (`auth-wait`), trang quản trị và hộp thoại hướng dẫn.
+
+**Được sử dụng bởi:** `src/ui/streamlit_app.py`.
+
 
 #### `tests/test_number_parser.py`
 
@@ -537,16 +615,18 @@ Quy tắc áp dụng:
 
 ## 7. Configuration và biến môi trường
 
-Không tìm thấy `.env`, module cấu hình, `os.environ`, `os.getenv`, `st.secrets` hoặc biến môi trường do ứng dụng đọc.
+Ứng dụng đọc Streamlit Secrets qua `src/auth/settings.py`; không đọc `os.environ`. Mẫu cấu hình: `.streamlit/secrets.toml.example`.
 
 | Cấu hình | Bắt buộc | Mục đích | Nơi sử dụng |
 | --- | ---: | --- | --- |
 | `requirements.txt` | Có | Khai báo dependency runtime | Môi trường cài đặt |
 | `SUPPORTED_EXTENSIONS` | Nội bộ | Danh sách extension nhận diện | `src/io/file_detector.py` |
 | Rule và hằng số layout | Nội bộ | Công thức nghiệp vụ, vị trí dòng/cột, style Excel | `src/domain/audit_rules.py`, `src/reporting/excel_report.py` |
-| Streamlit secrets | Không có | Chưa được sử dụng | Chưa xác định được |
+| `[auth]` trong Secrets | Có | `cookie_secret` (≥16 ký tự, bật ghi nhớ đăng nhập), `remember_days`, `[auth.users.<tên>]` (`password`, `role`) | `src/auth/settings.py` |
+| `[connections.gsheets]` trong Secrets | Không (khuyến nghị) | Khóa service account + `spreadsheet` URL; bật lưu tài khoản/đổi mật khẩu/nhật ký | `src/auth/gsheet.py` |
+| `.streamlit/config.toml` | Có | Theme, ẩn chi tiết lỗi, tắt thống kê sử dụng | Streamlit |
 
-Biến môi trường ứng dụng: **Chưa xác định được; source hiện tại không đọc biến môi trường nào.** Không có giá trị bí mật thực tế được ghi trong tài liệu này.
+Biến môi trường ứng dụng: không có. `.streamlit/secrets.toml` bị `.gitignore`; trên Streamlit Cloud dán nội dung vào App settings → Secrets. Không có giá trị bí mật thực tế được ghi trong tài liệu này.
 
 ## 8. Dependency
 
@@ -560,7 +640,9 @@ Biến môi trường ứng dụng: **Chưa xác định được; source hiện
 
 | Thư viện | Phiên bản khai báo | Mục đích |
 | --- | --- | --- |
-| `streamlit` | `>=1.36` | UI web, upload, session state, preview và download |
+| `streamlit` | `>=1.50` | UI web, upload, session state, dialog, popover, container ngang, `st.context.cookies`, download |
+| `gspread` | `>=5.12` | Đọc/ghi Google Sheet (tài khoản, nhật ký); import trễ, chỉ cần khi đã cấu hình |
+| `google-auth` | `>=2.30` | Xác thực service account cho Google Sheet |
 | `python-docx` | `>=1.1` | Đọc DOCX và duyệt paragraph/table |
 | `openpyxl` | `>=3.1` | Tạo workbook, formula, style, comment và conditional formatting |
 | `pytest` | Chưa khai báo, tùy chọn | Có thể chạy trực tiếp các hàm test kiểu pytest ban đầu; bộ test hiện tại không bắt buộc pytest vì đã hỗ trợ `unittest` |
@@ -572,7 +654,10 @@ Không có dependency development, formatter, linter hoặc type checker đượ
 | Module | Phụ thuộc nội bộ trực tiếp |
 | --- | --- |
 | `app.py` | `src.ui.streamlit_app` |
-| `src/ui/streamlit_app.py` | `src.services.audit_service` |
+| `src/ui/streamlit_app.py` | `src.services.audit_service`, `src.auth.usage_log`, `src.ui.auth_gate`, `src.ui.admin_page`, `src.ui.user_guide`, `src.ui.branding` |
+| `src/ui/auth_gate.py` | `src.auth.*`, `src.ui.browser_cookies`, `src.ui.branding` |
+| `src/ui/admin_page.py` | `src.auth.gsheet`, `src.auth.usage_log`, `src.auth.user_store`, `src.ui.auth_gate` |
+| `src/auth/user_store.py`, `usage_log.py` | `src.auth.gsheet`, `src.auth.models`, `src.auth.passwords`, `src.auth.settings` |
 | `src/services/audit_service.py` | `src.io.file_detector`, `src.io.docx_reader`, `src.reporting.excel_report`, `src.reporting.word_comment_report` |
 | `src/io/docx_reader.py` | `src.domain.models`, `src.extraction.statement_classifier`, `src.normalization.text_cleaner` |
 | `src/extraction/statement_classifier.py` | `src.domain.models`, `src.normalization.text_cleaner` |
@@ -586,7 +671,7 @@ Không phát hiện dependency vòng từ import tĩnh hiện tại.
 
 ## 9. Database và lưu trữ dữ liệu
 
-Dự án không sử dụng database, ORM, driver, schema, transaction, migration hoặc seed.
+Dự án không sử dụng database, ORM, schema, transaction hoặc migration. Google Sheet (khi được cấu hình) là nơi lưu duy nhất ngoài phiên: worksheet `Users` (tài khoản, mật khẩu đã băm) và `Logs` (nhật ký vận hành, không chứa dữ liệu khách hàng); cả hai được tự tạo ở lần dùng đầu.
 
 - DOCX upload được lưu tạm bằng `NamedTemporaryFile(delete=False)` để `python-docx` đọc, sau đó xóa trong `finally`.
 - Bảng trích xuất được giữ trong Python memory dưới dạng `list[ExtractedTable]`.
@@ -617,7 +702,7 @@ Session state:
 - `note_reconciliation_sort`: tham số tương thích ngược tại service/reporter; không còn ảnh hưởng đến workbook sau khi bỏ sheet đối chiếu riêng.
 - `processed_filename`: tên upload; hiện được ghi nhưng không được hiển thị hay dùng tiếp.
 
-Không có authentication/authorization, API endpoint, CLI argument hay multi-page routing. Mỗi phiên Streamlit có session state riêng; source không định nghĩa cache/global mutable state dùng chung.
+Xác thực: bắt buộc đăng nhập; phân quyền hai vai trò (`admin` thấy tab ⚙️ Quản trị). Session state xác thực: `auth_user`, `auth_token_version`, `auth_signed_out`, `auth_tried_token`, `auth_bridge_done`, `auth_failed_attempts`, `auth_locked_until`. Không có API endpoint, CLI argument hay multi-page routing. Cache dùng chung giữa phiên chỉ gồm kết nối Google Sheet (`st.cache_resource`) và danh sách tài khoản 60 giây (`st.cache_data`, xóa sau mỗi lần ghi); không chứa dữ liệu báo cáo.
 
 ## 11. Testing
 
@@ -643,6 +728,8 @@ python -m unittest discover -s tests -v
 
 Kết quả kiểm tra ngày 2026-08-20: 130 test pass bằng `unittest`; bao gồm classifier và lớp bảo vệ reporter cho bảng khoảng thời gian khấu hao có header `Năm`, loại comment nhiễu cho disclosure TSCĐ đã khấu hao hết còn sử dụng và bảng metadata hợp đồng vay; đối chiếu từng chỉ tiêu của bảng biến động vốn chủ sở hữu Thông tư 200 với BS 411/421 và PL 60; cùng toàn bộ phạm vi hồi quy trước đó. `pytest` không được khai báo nhưng không bắt buộc cho suite hiện tại.
 
+Kết quả kiểm tra ngày 2026-11-20: 212 test pass (`python -m pytest -q`), gồm `tests/test_auth.py` (băm mật khẩu, token ghi nhớ hết hạn/bị thu hồi/giả mạo, quy tắc tên đăng nhập, `UserDirectory` với backend bộ nhớ: thêm/sửa/xóa, đổi mật khẩu, bảo vệ Quản trị viên cuối cùng, dự phòng khi mất Google Sheet) và test UI cho khu vực kiểm tra, hướng dẫn, stylesheet, nội dung nhật ký. Luồng đăng nhập sai/đúng, ghi nhớ đăng nhập sau tải lại trang, đăng xuất, tab Quản trị chỉ đọc và phân quyền tài khoản thường đã kiểm tra thủ công trên trình duyệt với secrets thử nghiệm; luồng ghi Google Sheet thật chưa kiểm tra do chưa có thông tin kết nối.
+
 Khu vực chưa có test:
 
 - Text normalization và statement classifier.
@@ -655,13 +742,14 @@ Khu vực chưa có test:
 - Xóa tệp tạm và toàn bộ vòng đời session state.
 - Integration test tự động cố định với các DOCX mẫu; file Top Sport đã được dùng để kiểm chứng thủ công trong lần triển khai đối chiếu.
 
-Test đối chiếu hiện có trong `tests/test_note_matcher.py`: BS, PL, CF, bốn registry tài sản theo mã, thiếu mã không fallback theo giá trị, không tìm thấy chỉ tiêu BCTC, không suy diễn tên gần đúng, nhiều chỉ tiêu cùng mã TM với kết quả độc lập, số âm, dung sai làm tròn, sai lệch trọng yếu và bỏ qua phân loại không phải Thuyết minh.
+Test đối chiếu hiện có trong `tests/test_note_matcher.py`: BS, PL, CF, bốn registry tài sản theo mã, thiếu mã không fallback theo giá trị, không tìm thấy chỉ tiêu BCTC, không suy diễn tên gần đúng, nhiều chỉ tiêu cùng mã TM với kết quả độc lập, số âm, so sánh chính xác không dung sai, sai lệch trọng yếu và bỏ qua phân loại không phải Thuyết minh.
 
 ## 12. Logging và xử lý lỗi
 
 ### Logging
 
-Không tìm thấy sử dụng module `logging`, log file hoặc cấu hình log. Các yêu cầu ghi thời gian bắt đầu/kết thúc/thời lượng/số tệp/lỗi trong `AGENTS.md` chưa được triển khai trong source hiện tại.
+- Nhật ký sử dụng (`src/auth/usage_log.py`): `Đăng xuất`, `Kiểm tra BCTC` (tên tệp Word, số bảng, số sai lệch, số cần xem xét, thời gian xử lý), `Kiểm tra BCTC lỗi` (tên tệp và loại lỗi), `Quản lý tài khoản`; không ghi đăng nhập; ghi worksheet `Logs` khi có Google Sheet, không ghi nội dung báo cáo. Vì có tên tệp (thường chứa tên khách hàng), chỉ chia sẻ bảng tính cho quản trị viên và service account. Thời gian bắt đầu/kết thúc tuyệt đối chưa ghi riêng (chỉ thời điểm ghi và thời lượng).
+- Module `logging` chuẩn: `LOGGER.exception` khi xử lý tệp lỗi ở UI; cảnh báo khi không đọc/ghi được Google Sheet. Chưa có cấu hình handler riêng (dùng mặc định của Streamlit).
 
 ### Exception và fallback
 
@@ -708,7 +796,7 @@ Lệnh cài development dependency riêng: **Chưa xác định được từ so
 
 | Tác vụ | Lệnh |
 | --- | --- |
-| Tạo file cấu hình | Chưa xác định được từ source code hiện tại. |
+| Tạo file cấu hình | Sao chép `.streamlit/secrets.toml.example` thành `.streamlit/secrets.toml`, điền `auth.cookie_secret`, mật khẩu khởi tạo và (tùy chọn) `[connections.gsheets]`. |
 | Khởi tạo database | Không áp dụng; dự án không có database. |
 | Formatter | Chưa xác định được từ source code hiện tại. |
 | Linter | Chưa xác định được từ source code hiện tại. |
@@ -762,6 +850,7 @@ Kiểm tra import `app` và service đã thành công trong runtime rà soát. K
 | --- | --- | --- |
 | `app.py` | `src/ui/streamlit_app.py`, lệnh Streamlit | Ứng dụng không khởi động |
 | `src/ui/streamlit_app.py` | Service, session state, xóa tệp tạm, download | Rò tệp tạm, mất kết quả phiên, lộ lỗi kỹ thuật |
+| `src/auth/*`, `src/ui/auth_gate.py` | Đăng nhập, ghi nhớ đăng nhập, phân quyền, Google Sheet | Khóa người dùng ngoài ứng dụng, lộ tài khoản, mất hiệu lực token; chạy `tests/test_auth.py` và thử đăng nhập/đăng xuất/tải lại trang |
 | `src/services/audit_service.py` | UI, file detector, reader, reporter | Phá vỡ use case hoặc chấp nhận định dạng chưa có reader |
 | `src/io/file_detector.py` | Service và UI uploader | Tuyên bố hỗ trợ sai định dạng |
 | `src/io/docx_reader.py` | Classifier, text cleaner, model, DOCX mẫu | Sai thứ tự bảng/tiêu đề hoặc mất dữ liệu gốc |
@@ -837,7 +926,7 @@ Không phát hiện import cycle hoặc global mutable state nghiệp vụ. Các
 | Sửa kiểm tra cộng dọc/ngang | `src/reporting/excel_report.py` |
 | Sửa workbook hoặc sheet tổng hợp | `src/reporting/excel_report.py` |
 | Sửa palette/fill/border Excel dùng chung | `src/reporting/excel_styles.py`, `src/reporting/excel_report.py`, `tests/test_excel_report.py` |
-| Sửa comment trong Word | `src/reporting/word_comment_report.py`, `src/reporting/excel_report.py`, `tests/test_word_comment_report.py` |
+| Sửa comment trong Word | `src/reporting/word_comment_report.py`, `src/reporting/excel_report.py`, `tests/test_word_comment_report.py`, `tests/test_word_comment_targets.py`, `tests/test_finding_accuracy.py` |
 | Sửa tra cứu/đối chiếu Thuyết minh | `src/reconciliation/note_matcher.py`, `src/io/docx_reader.py`, `src/reporting/excel_report.py`, `tests/test_note_matcher.py` |
 | Thêm model/domain type | `src/domain/models.py` và tất cả caller trong reader/reporter/UI |
 | Thay đổi cấu hình | Hiện không có module config; xem hằng số tại `file_detector.py`, `audit_rules.py`, `excel_report.py` |
@@ -859,7 +948,7 @@ Không phát hiện import cycle hoặc global mutable state nghiệp vụ. Các
 - Sheet chi tiết không hiển thị tổng sai lệch tuyệt đối, tiêu đề nhóm cộng dọc hoặc metadata truy vết đối chiếu; `00_Tong_hop` chỉ giữ kết luận trạng thái đối chiếu theo từng bảng.
 - Khối đối chiếu trong sheet Thuyết minh không tạo dòng `Trạng thái` cho kết quả `Khớp` hoặc `Có chênh lệch`; chỉ thêm dòng `Cần xác minh` khi thiếu nguồn hoặc không tìm thấy số liệu.
 - Giao diện Streamlit chỉ hiển thị thống kê và danh sách vấn đề cần chú ý; không còn expander xem toàn bộ bảng đã nhận diện.
-- Giao diện có tùy chọn `Tự động tạo báo cáo kiểm tra sau khi có file Word`, mặc định bật và đặt ngay trước vùng tải tệp. Mỗi nội dung DOCX chỉ được tự động xử lý một lần trong session; khi tắt tùy chọn, nút `Tạo báo cáo kiểm tra` được bật để chạy thủ công.
+- Không còn tùy chọn `Tự động tạo báo cáo kiểm tra sau khi có file Word` (không phù hợp Streamlit Cloud): người dùng bấm `Tạo báo cáo kiểm tra` sau khi chọn tệp. Kết quả chỉ hiển thị khi dấu vân tay SHA-256 của tệp đang chọn trùng tệp đã xử lý; chọn tệp khác thì kết quả cũ được ẩn.
 - Sau khi xử lý, ba nút tải xuống nằm cùng hàng: nút `Word và Excel` kích hoạt tuần tự hai lượt tải file riêng theo thứ tự Word rồi Excel, tiếp theo là nút Excel riêng và Word có comment riêng. Trình duyệt có thể yêu cầu người dùng cho phép tải nhiều tệp. Không còn tùy chọn bỏ qua việc tạo Word; pipeline luôn cố tạo cả hai đầu ra.
 - Tên file tải xuống lấy stem của file Word đầu vào và thêm hậu tố ` checked`: `<tên gốc> checked.xlsx` và `<tên gốc> checked.docx`.
 - Với bảng được phân loại `Thuyết minh`, `docx_reader` ưu tiên đoạn văn có Word numbering gần nhất phía trên làm `title_hint`; tiêu đề này được dùng cho cột `Nội dung bảng` tại `00_Tong_hop`, trường `Nội dung bảng` trên Streamlit và ô A1 của sheet `Tnnn_TM`. Nếu không có đoạn numbering, hệ thống dùng tiêu đề gần nhất/fallback hiện tại.
@@ -873,9 +962,7 @@ Không phát hiện import cycle hoặc global mutable state nghiệp vụ. Các
 - Bảng TSCĐ tóm tắt ba dòng `Nguyên giá`, `Khấu hao/Hao mòn lũy kế`, `Giá trị còn lại` được kiểm tra theo `Còn lại = Nguyên giá + giá trị lũy kế có dấu` cho cả hai kỳ và đối chiếu riêng ba mã BS theo registry tài sản. Dấu gạch ngang được chuyển thành 0; công thức chênh lệch đối chiếu dùng `N()` để ô gạch ngang/text không gây `#VALUE!`.
 - Bảng vốn góp có cả USD và VND, kể cả có dòng `Tổng cộng`, đối chiếu mã BS 411 bằng cột VND trong từng khối kỳ thay vì cột tiền tệ đầu tiên. Bảng biến động vốn chủ sở hữu được nhận diện thêm từ tiêu đề nằm trong ô đầu bảng khi `title_hint` hẹp; vẫn đối chiếu riêng 411, 421 và PL 60, không dùng cột `Tổng cộng` làm một chỉ tiêu BS.
 - Bảng ngoại bảng một dòng có hai kỳ, như `Ngoại tệ các loại`, được ghi trạng thái đối chiếu BCTC `Không áp dụng` ở sheet tổng hợp và hiển thị cùng thông điệp tại sheet chi tiết, thay vì `Chưa có kết quả`.
-- Comment đối chiếu Thuyết minh chỉ được tạo cho kỳ thực sự có chênh lệch hoặc cần xác minh; nếu kỳ này lệch nhưng kỳ trước khớp (hoặc ngược lại), hệ thống không tạo thêm comment `Số liệu khớp` gây nhiễu.
-- Mọi kiểu đối chiếu TM–BCTC có giá trị chênh lệch xác định được, bao gồm kiểu khớp tham chiếu Thuyết minh thông thường, đều ghi số chênh lệch trong comment Word thay vì chỉ ghi trạng thái chung.
-- Đã chạy 145 test bằng `unittest`, tất cả pass; có hồi quy cho bảng biến động thuế được ghi `Không áp dụng`, bảng có tên và dòng `Tổng cộng` nhưng thiếu chỉ tiêu BCTC vẫn tạo comment Word cần xác minh, cùng toàn bộ phạm vi kiểm tra trước đó.
+- Đã chạy 173 test bằng `unittest`, tất cả pass; có hồi quy cho cấu trúc cột tinh giản của `00_Tong_hop`, cơ chế cô lập Bảng biến động vốn chủ sở hữu (`_is_equity_movement_table`), chặn mã tổng hợp 400 trong Generic Matcher, bảng biến động thuế ghi `Không áp dụng`, và toàn bộ phạm vi kiểm tra trước đó.
 - Root hiện không phải Git working tree trong môi trường rà soát, nên không thể dùng `git status` để đối chiếu thay đổi.
 - Không đọc hoặc ghi `.env`; không tìm thấy source tham chiếu secret/token/API key.
 - Không tự động sửa bất kỳ vấn đề rủi ro nào đã liệt kê.

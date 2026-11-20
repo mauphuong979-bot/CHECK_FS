@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, replace
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal
 import re
 
 from src.domain.models import ExtractedTable, NoteMatchResult, StatementType
+from src.extraction.table_currency import currencies_are_compatible, resolve_table_currencies
 from src.extraction.table_layout import detect_period_columns_from_headers
 from src.extraction.table_values import DEFAULT_EXCEL_DATA_START_ROW
 from src.normalization.number_parser import parse_accounting_number
@@ -13,7 +14,6 @@ from src.normalization.text_cleaner import clean_text, normalized_key
 
 
 DEFAULT_ROUNDING_TOLERANCE = Decimal(0)
-RECONCILIATION_ROUND_QUANTUM = Decimal("0.01")
 STATEMENT_TYPES = {
     StatementType.BALANCE_SHEET_ASSETS,
     StatementType.BALANCE_SHEET_EQUITY,
@@ -75,7 +75,8 @@ def reconcile_note_tables(
     rounding_tolerance: Decimal = DEFAULT_ROUNDING_TOLERANCE,
 ) -> list[NoteMatchResult]:
     """Đối chiếu riêng các bảng Thuyết minh với chỉ tiêu BS/PL/CF."""
-    statement_items = _extract_statement_items(tables)
+    all_statement_items = _extract_statement_items(tables)
+    currency_by_table = resolve_table_currencies(tables)
     results: list[NoteMatchResult] = []
 
     for note_table in tables:
@@ -87,6 +88,11 @@ def reconcile_note_tables(
             continue
         if _is_receivable_net_continuation_note(note_table, tables):
             continue
+        statement_items = _items_in_note_currency(
+            note_table,
+            all_statement_items,
+            currency_by_table,
+        )
         income_tax_results = _reconcile_income_tax_schedule(
             note_table,
             statement_items,
@@ -103,13 +109,14 @@ def reconcile_note_tables(
         if depreciation_results is not None:
             results.extend(depreciation_results)
             continue
-        equity_movement_results = _reconcile_equity_movement_table(
-            note_table,
-            statement_items,
-            rounding_tolerance,
-        )
-        if equity_movement_results is not None:
-            results.extend(equity_movement_results)
+        if _is_equity_movement_table(note_table):
+            equity_movement_results = _reconcile_equity_movement_table(
+                note_table,
+                statement_items,
+                rounding_tolerance,
+            )
+            if equity_movement_results is not None:
+                results.extend(equity_movement_results)
             continue
         contributed_capital_results = _reconcile_contributed_capital_table(
             note_table,
@@ -188,6 +195,20 @@ def reconcile_note_tables(
     return results
 
 
+def _items_in_note_currency(
+    note_table: ExtractedTable,
+    statement_items: list[StatementItem],
+    currency_by_table: dict[int, str | None],
+) -> list[StatementItem]:
+    """Chỉ đối chiếu TM với bộ BCTC cùng đơn vị tiền tệ (ví dụ bản USD và bản quy đổi VND)."""
+    note_currency = currency_by_table.get(note_table.index)
+    return [
+        item
+        for item in statement_items
+        if currencies_are_compatible(note_currency, currency_by_table.get(item.table_index))
+    ]
+
+
 def is_parent_detail_with_maturity_split(
     table: ExtractedTable,
     tables: list[ExtractedTable],
@@ -262,36 +283,67 @@ def _maturity_split_totals(
     return period_total(current_col), period_total(prior_col)
 
 
+def _is_equity_movement_table(note_table: ExtractedTable) -> bool:
+    """Nhận diện bảng biến động vốn chủ sở hữu (bảng ma trận nhiều thành phần vốn)."""
+    recognition_text = normalized_key(
+        " ".join(
+            (note_table.title_hint, *note_table.context_hints)
+            + tuple(_cell(row, 0) for row in note_table.rows[:4])
+        )
+    )
+    if any(kw in recognition_text for kw in ("tang, giam von chu so huu", "bien dong von chu so huu")):
+        return True
+    header_text = normalized_key(
+        " ".join(
+            _cell(note_table.rows[r], c)
+            for r in range(min(5, note_table.row_count))
+            for c in range(note_table.column_count)
+        )
+    )
+    has_capital_col = any(
+        kw in header_text
+        for kw in ("von gop cua chu so huu", "von dau tu cua chu so huu", "von dieu le", "von gop")
+    )
+    has_retained_col = any(
+        kw in header_text
+        for kw in ("loi nhuan sau thue chua phan phoi", "loi nhuan chua phan phoi", "lnst chua phan phoi")
+    )
+    return "von chu so huu" in recognition_text and has_capital_col and has_retained_col
+
+
 def _reconcile_equity_movement_table(
     note_table: ExtractedTable,
     statement_items: list[StatementItem],
     tolerance: Decimal,
 ) -> list[NoteMatchResult] | None:
     """Đối chiếu bảng biến động vốn chủ sở hữu theo mẫu Thông tư 200."""
-    recognition_text = normalized_key(
-        " ".join(
-            (note_table.title_hint, *note_table.context_hints)
-            + tuple(_cell(row, 0) for row in note_table.rows[:3])
-        )
-    )
-    if "von chu so huu" not in recognition_text:
+    if not _is_equity_movement_table(note_table):
         return None
 
-    capital_col = _equity_column(note_table, "von gop cua chu so huu")
+    capital_col = _equity_column(
+        note_table,
+        "von gop cua chu so huu",
+        "von dau tu cua chu so huu",
+        "von dieu le",
+        "von gop",
+    )
     retained_earnings_col = _equity_column(
         note_table,
         "loi nhuan sau thue chua phan phoi",
+        "loi nhuan chua phan phoi",
+        "lnst chua phan phoi",
     )
     prior_closing_row = _equity_row(
         note_table,
         lambda label: (
             ("so cuoi nam truoc" in label and "dau nam nay" in label)
-            or label in ("so cuoi nam truoc", "so dau nam nay", "so cuoi ky truoc")
+            or label in ("so cuoi nam truoc", "so dau nam nay", "so cuoi ky truoc", "so dau nam", "so du dau nam", "so dau ky")
+            or ("so cuoi nam truoc" in label and "dau" not in label)
         ),
     )
     closing_row = _equity_row(
         note_table,
-        lambda label: any(kw in label for kw in ("so cuoi nam", "so cuoi ky", "so du cuoi nam", "so du cuoi ky")) and "truoc" not in label,
+        lambda label: any(kw in label for kw in ("so cuoi nam", "so cuoi ky", "so du cuoi nam", "so du cuoi ky", "so cuoi nam nay", "so cuoi ky nay")) and "truoc" not in label and "dau" not in label,
     )
     if (
         capital_col is None
@@ -330,11 +382,11 @@ def _reconcile_equity_movement_table(
 
     current_profit_row = _equity_row(
         note_table,
-        lambda label: label == "loi nhuan thuan trong nam",
+        lambda label: label == "loi nhuan thuan trong nam" or "loi nhuan thuan trong nam nay" in label or "lai thuan trong nam" in label,
     )
     prior_profit_row = _equity_row(
         note_table,
-        lambda label: "loi nhuan thuan trong nam truoc" in label,
+        lambda label: "loi nhuan thuan trong nam truoc" in label or "lai thuan trong nam truoc" in label,
     )
     if current_profit_row is not None or prior_profit_row is not None:
         results.append(
@@ -354,11 +406,11 @@ def _reconcile_equity_movement_table(
     return results
 
 
-def _equity_column(table: ExtractedTable, marker: str) -> int | None:
+def _equity_column(table: ExtractedTable, *markers: str) -> int | None:
     header_limit = min(5, table.row_count)
     for col in range(1, table.column_count):
         header = normalized_key(" ".join(_cell(table.rows[row], col) for row in range(header_limit)))
-        if marker in header:
+        if any(marker in header for marker in markers):
             return col
     return None
 
@@ -1110,6 +1162,17 @@ def is_inventory_provision_rollforward_note(table: ExtractedTable) -> bool:
     return is_provision and has_rollforward
 
 
+def is_restated_comparative_note(table: ExtractedTable) -> bool:
+    """Bảng "Thông tin so sánh" so số trình bày lại với số đã báo cáo năm trước.
+
+    Các cột của bảng không phải kỳ này/kỳ trước của BCTC nên không đối chiếu theo kỳ.
+    """
+    header = normalized_key(" ".join(value for row in table.rows[:3] for value in row))
+    return "trinh bay lai" in header and (
+        "theo bao cao nam truoc" in header or "so da bao cao" in header
+    )
+
+
 def _is_non_reconcilable_information_note(table: ExtractedTable) -> bool:
     if is_tax_rollforward_note(table) or is_inventory_provision_rollforward_note(table):
         return True
@@ -1120,6 +1183,8 @@ def _is_non_reconcilable_information_note(table: ExtractedTable) -> bool:
         )
     )
     if "so nam khau hao" in text or "thoi gian khau hao" in text:
+        return True
+    if is_restated_comparative_note(table):
         return True
     if _is_depreciation_life_range_table(table):
         return True
@@ -1470,11 +1535,14 @@ def _extract_statement_items(tables: list[ExtractedTable]) -> list[StatementItem
         if columns is None:
             continue
         name_col, code_col, note_col, current_col, prior_col = columns
+        is_single_period = (current_col == prior_col)
         for row_index, row in enumerate(table.rows):
             code = _cell(row, code_col)
             name = _cell(row, name_col)
             if not code or not name:
                 continue
+            prior_val = _parse_number(_cell(row, prior_col)) if not is_single_period else None
+            prior_c = _excel_cell(row_index, prior_col) if not is_single_period else ""
             items.append(
                 StatementItem(
                     table_index=table.index,
@@ -1483,9 +1551,9 @@ def _extract_statement_items(tables: list[ExtractedTable]) -> list[StatementItem
                     note_reference=_cell(row, note_col),
                     name=name,
                     current_value=_parse_number(_cell(row, current_col)),
-                    prior_value=_parse_number(_cell(row, prior_col)),
+                    prior_value=prior_val,
                     current_cell=_excel_cell(row_index, current_col),
-                    prior_cell=_excel_cell(row_index, prior_col),
+                    prior_cell=prior_c,
                 )
             )
     return items
@@ -1503,10 +1571,18 @@ def _statement_columns(table: ExtractedTable) -> tuple[int, int, int, int, int] 
             for col in range(code_col + 1, table.column_count)
             if col != note_col and any(_parse_number(_cell(data_row, col)) is not None for data_row in table.rows)
         ]
-        if len(numeric_cols) < 2:
+        if not numeric_cols:
             return None
+        current_cols, prior_cols = detect_period_columns_from_headers(table)
+        current_col = current_cols[0] if current_cols and current_cols[0] in numeric_cols else numeric_cols[0]
+        if prior_cols and prior_cols[0] in numeric_cols:
+            prior_col = prior_cols[0]
+        elif len(numeric_cols) >= 2:
+            prior_col = numeric_cols[1] if current_col == numeric_cols[0] else numeric_cols[0]
+        else:
+            prior_col = current_col
         name_col = next((col for col in range(code_col) if any(_cell(data_row, col) for data_row in table.rows)), 0)
-        return name_col, code_col, note_col if note_col is not None else -1, numeric_cols[0], numeric_cols[1]
+        return name_col, code_col, note_col if note_col is not None else -1, current_col, prior_col
     return None
 
 
@@ -1515,7 +1591,11 @@ def _find_candidates(
     statement_items: list[StatementItem],
 ) -> list[tuple[StatementItem, str, float]]:
     hints = _note_hints(note_table)
-    referenced_items = [item for item in statement_items if item.note_reference]
+    # Mã 400 (VỐN CHỦ SỞ HỮU) là chỉ tiêu tổng hợp cấp 1, không đối chiếu 1-1 qua generic matching để tránh gán nhầm vào bảng chi tiết/ma trận
+    referenced_items = [
+        item for item in statement_items
+        if item.note_reference and normalize_code(item.code) != "400"
+    ]
     semantic_candidate = _select_semantic_total_candidate(note_table, statement_items)
     if semantic_candidate is not None:
         return [
@@ -1904,10 +1984,8 @@ def _comparison_status(
 def _difference(statement_value: Decimal | None, note_value: Decimal | None) -> Decimal | None:
     if statement_value is None or note_value is None:
         return None
-    return (statement_value - note_value).quantize(
-        RECONCILIATION_ROUND_QUANTUM,
-        rounding=ROUND_HALF_UP,
-    )
+    # So sánh chính xác: chênh lệch 0,01 vẫn là chênh lệch, không làm tròn.
+    return statement_value - note_value
 
 
 def _absolute_difference(
@@ -1916,10 +1994,7 @@ def _absolute_difference(
 ) -> Decimal | None:
     if statement_value is None or note_value is None:
         return None
-    return (abs(statement_value) - abs(note_value)).quantize(
-        RECONCILIATION_ROUND_QUANTUM,
-        rounding=ROUND_HALF_UP,
-    )
+    return abs(statement_value) - abs(note_value)
 
 
 def _normalized_item_name(value: str) -> str:

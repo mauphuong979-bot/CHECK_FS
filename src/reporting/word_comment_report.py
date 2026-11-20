@@ -10,8 +10,24 @@ from docx.shared import RGBColor
 from src.domain.models import WordCommentCategory, WordCommentTarget
 
 
-COMMENT_AUTHOR = "CHECK_FS"
 COMMENT_INITIALS = "CFS"
+# Tác giả comment tách theo mức độ để kiểm toán viên lọc trong Word bằng
+# Review → Show Markup → Specific People (ví dụ chỉ xem các sai lệch).
+COMMENT_AUTHOR_BY_CATEGORY = {
+    WordCommentCategory.DIFFERENCE: "CHECK_FS - Sai lệch",
+    WordCommentCategory.REVIEW: "CHECK_FS - Cần xem xét",
+    WordCommentCategory.GENERAL: "CHECK_FS",
+}
+COMMENT_PREFIX_BY_CATEGORY = {
+    WordCommentCategory.DIFFERENCE: "[SAI LỆCH] ",
+    WordCommentCategory.REVIEW: "[CẦN XEM XÉT] ",
+    WordCommentCategory.GENERAL: "",
+}
+COMMENT_CATEGORY_ORDER = (
+    WordCommentCategory.DIFFERENCE,
+    WordCommentCategory.REVIEW,
+    WordCommentCategory.GENERAL,
+)
 COMMENT_DIFFERENCE_COLOR = RGBColor(0xC0, 0x00, 0x00)
 COMMENT_REVIEW_COLOR = RGBColor(0xC6, 0x59, 0x11)
 COMMENT_TRACE_COLOR = RGBColor(0x05, 0x63, 0xC1)
@@ -25,7 +41,9 @@ def build_commented_docx(
     if not hasattr(document, "add_comment"):
         raise RuntimeError("Phiên bản python-docx hiện tại chưa hỗ trợ tạo comment.")
 
-    messages_by_anchor: dict[object, list[WordCommentTarget]] = defaultdict(list)
+    messages_by_anchor: dict[tuple[object, WordCommentCategory], list[WordCommentTarget]] = (
+        defaultdict(list)
+    )
     cell_by_anchor: dict[object, object] = {}
     for target in targets:
         if not 1 <= target.table_index <= len(document.tables):
@@ -40,17 +58,22 @@ def build_commented_docx(
             continue
         anchor = cell._tc
         cell_by_anchor[anchor] = cell
-        if not any(item.message == target.message for item in messages_by_anchor[anchor]):
-            messages_by_anchor[anchor].append(target)
+        group = messages_by_anchor[(anchor, target.category)]
+        if not any(item.message == target.message for item in group):
+            group.append(target)
 
-    for anchor, targets_for_anchor in messages_by_anchor.items():
+    ordered_groups = sorted(
+        messages_by_anchor.items(),
+        key=lambda item: COMMENT_CATEGORY_ORDER.index(item[0][1]),
+    )
+    for (anchor, category), targets_for_anchor in ordered_groups:
         runs = _nonempty_runs(cell_by_anchor[anchor])
         if not runs:
             continue
         comment = document.add_comment(
             runs=runs,
             text="",
-            author=COMMENT_AUTHOR,
+            author=COMMENT_AUTHOR_BY_CATEGORY[category],
             initials=COMMENT_INITIALS,
         )
         _write_styled_comment(comment, targets_for_anchor)
@@ -72,6 +95,13 @@ def _write_styled_comment(comment, targets: list[WordCommentTarget]) -> None:
 
 
 def _write_comment_message(paragraph, target: WordCommentTarget) -> None:
+    color = _category_color(target.category)
+    prefix = COMMENT_PREFIX_BY_CATEGORY[target.category]
+    if prefix:
+        prefix_run = paragraph.add_run(prefix)
+        prefix_run.bold = True
+        prefix_run.font.color.rgb = color
+
     message = target.message
     trace_end = message.find(":") + 1 if message.startswith("Đối chiếu ") else 0
     if trace_end:
@@ -83,22 +113,29 @@ def _write_comment_message(paragraph, target: WordCommentTarget) -> None:
     run = paragraph.add_run(message)
     if target.category == WordCommentCategory.DIFFERENCE:
         run.bold = True
-        run.font.color.rgb = COMMENT_DIFFERENCE_COLOR
-    elif target.category == WordCommentCategory.REVIEW:
-        run.font.color.rgb = COMMENT_REVIEW_COLOR
+    if color is not None:
+        run.font.color.rgb = color
+
+
+def _category_color(category: WordCommentCategory) -> RGBColor | None:
+    if category == WordCommentCategory.DIFFERENCE:
+        return COMMENT_DIFFERENCE_COLOR
+    if category == WordCommentCategory.REVIEW:
+        return COMMENT_REVIEW_COLOR
+    return None
 
 
 def _resolve_comment_cell(table, row_index: int, column_index: int):
+    """Neo comment vào đúng ô; nếu ô trống thì dùng ô có chữ đầu tiên của cùng dòng.
+
+    Không lan sang dòng khác để comment không bị gắn nhầm vị trí.
+    """
     preferred = table.rows[row_index].cells[column_index]
     if _nonempty_runs(preferred):
         return preferred
     for cell in table.rows[row_index].cells:
         if _nonempty_runs(cell):
             return cell
-    for row in table.rows:
-        for cell in row.cells:
-            if _nonempty_runs(cell):
-                return cell
     return None
 
 

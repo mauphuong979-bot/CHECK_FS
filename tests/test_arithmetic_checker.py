@@ -85,25 +85,32 @@ class ArithmeticCheckerTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "đối chiếu chéo"):
             calculate_same_table_arithmetic(rule, 3, {})
 
-    def test_rounds_differences_to_two_decimals_with_accounting_rounding(self):
-        below_half_cent = {
+    def test_differences_are_exact_without_rounding_tolerance(self):
+        one_cent = {
+            "100": {3: TableValue(TableValueStatus.NUMBER, Decimal("100.01"))},
+            "110": {3: TableValue(TableValueStatus.NUMBER, Decimal("100"))},
+        }
+        sub_cent = {
             "100": {3: TableValue(TableValueStatus.NUMBER, Decimal("100.004"))},
             "110": {3: TableValue(TableValueStatus.NUMBER, Decimal("100"))},
         }
-        half_cent = {
-            "100": {3: TableValue(TableValueStatus.NUMBER, Decimal("100.005"))},
-            "110": {3: TableValue(TableValueStatus.NUMBER, Decimal("100"))},
+        exact = {
+            "100": {3: TableValue(TableValueStatus.NUMBER, Decimal("100.10"))},
+            "110": {3: TableValue(TableValueStatus.NUMBER, Decimal("100.1"))},
         }
 
         self.assertEqual(
-            calculate_same_table_arithmetic(self.rule, 3, below_half_cent).difference,
-            Decimal("0.00"),
-        )
-        self.assertEqual(
-            calculate_same_table_arithmetic(self.rule, 3, half_cent).difference,
+            calculate_same_table_arithmetic(self.rule, 3, one_cent).difference,
             Decimal("0.01"),
         )
-
+        self.assertEqual(
+            calculate_same_table_arithmetic(self.rule, 3, sub_cent).difference,
+            Decimal("0.004"),
+        )
+        self.assertEqual(
+            calculate_same_table_arithmetic(self.rule, 3, exact).difference,
+            Decimal(0),
+        )
 
 if __name__ == "__main__":
     unittest.main()

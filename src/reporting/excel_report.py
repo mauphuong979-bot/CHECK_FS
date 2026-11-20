@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from decimal import Decimal, ROUND_HALF_UP
+from contextvars import ContextVar
+from dataclasses import dataclass
+from decimal import Decimal
 from io import BytesIO
 from pathlib import Path
 import re
@@ -22,6 +24,7 @@ from src.domain.audit_rules import (
 from src.domain.arithmetic_checker import calculate_same_table_arithmetic
 from src.domain.models import (
     ExtractedTable,
+    FindingDetail,
     NoteMatchResult,
     StatementType,
     TableCheckResult,
@@ -49,8 +52,14 @@ from src.normalization.number_parser import parse_accounting_number
 from src.normalization.text_cleaner import clean_text, normalized_key
 from src.reconciliation.note_matcher import (
     is_parent_detail_with_maturity_split,
+    is_restated_comparative_note,
     is_tax_rollforward_note,
     reconcile_note_tables,
+)
+from src.reporting.number_format import (
+    format_amount as _format_amount,
+    format_vietnamese_number as _format_vietnamese_number,
+    to_decimal as _to_decimal,
 )
 from src.reporting.excel_styles import (
     CHECK_VALUE_FILL,
@@ -60,7 +69,6 @@ from src.reporting.excel_styles import (
     COLOR_NAVY,
     COLOR_TEXT,
     COLOR_WHITE,
-    COLOR_YELLOW,
     GROUP_HEADER_FILL,
     HEADER_FILL,
     LINKED_VALUE_FILL,
@@ -78,6 +86,12 @@ NOTE_STATUS_LABELS = {
     "Note value not found": "Không tìm thấy số liệu TM",
     "Statement not found": "Không tìm thấy chỉ tiêu BCTC",
 }
+PRIMARY_STATEMENT_TYPES = (
+    StatementType.BALANCE_SHEET_ASSETS,
+    StatementType.BALANCE_SHEET_EQUITY,
+    StatementType.INCOME_STATEMENT,
+    StatementType.CASH_FLOW,
+)
 DASH_ZERO_MARKERS = {"-", "–", "—"}
 TITLE_ROW = 1
 INFO_ROW = 2
@@ -94,38 +108,170 @@ VALID_SUMMARY_SORTS = {
     SUMMARY_SORT_ISSUES_DESC,
     SUMMARY_SORT_STATUS,
 }
-CHECK_ROUND_DIGITS = 2
-CHECK_ROUND_QUANTUM = Decimal("0.01")
+DEFAULT_CHECK_ROUND_DIGITS = 2
+MAX_CHECK_ROUND_DIGITS = 6
 ACCOUNTING_NUMBER_FORMAT = '#,##0;(#,##0);-'
+DECIMAL_ACCOUNTING_NUMBER_FORMAT = '#,##0.00;(#,##0.00);-'
 CHECK_DIFFERENCE_NUMBER_FORMAT = ACCOUNTING_NUMBER_FORMAT
+# Tác giả comment trong Excel mang mức độ của phát hiện; Word đọc trực tiếp giá trị này
+# thay vì suy đoán từ nội dung câu thông báo.
+DIFFERENCE_COMMENT_AUTHOR = "CHECK_FS_RULE"
+REVIEW_COMMENT_AUTHOR = "CHECK_FS_REVIEW"
+FINDING_COMMENT_AUTHORS = {
+    DIFFERENCE_COMMENT_AUTHOR: WordCommentCategory.DIFFERENCE,
+    REVIEW_COMMENT_AUTHOR: WordCommentCategory.REVIEW,
+}
+# Số chữ số thập phân của công thức ROUND trong Excel theo dữ liệu nguồn của tài liệu
+# đang xử lý. ContextVar giữ giá trị riêng cho từng lần tạo báo cáo (an toàn đa người dùng).
+_FINDING_DETAILS: ContextVar[dict[tuple[str, str], FindingDetail] | None] = ContextVar(
+    "finding_details",
+    default=None,
+)
+_CHECK_ROUND_DIGITS: ContextVar[int] = ContextVar(
+    "check_round_digits",
+    default=DEFAULT_CHECK_ROUND_DIGITS,
+)
+
+
+@dataclass(frozen=True)
+class AuditWorkbookReport:
+    workbook_bytes: bytes
+    comment_targets: list[WordCommentTarget]
+    table_results: tuple[TableCheckResult, ...]
 
 
 def _excel_check_formula(expression: str) -> str:
-    return f"=ROUND({expression},{CHECK_ROUND_DIGITS})"
-
-
-def _rounded_check_value(value: Decimal | float | int) -> Decimal:
-    return Decimal(str(value)).quantize(CHECK_ROUND_QUANTUM, rounding=ROUND_HALF_UP)
+    # ROUND chỉ loại nhiễu dấu phẩy động của Excel; số chữ số không nhỏ hơn độ chính xác
+    # của dữ liệu nguồn nên chênh lệch 0,01 vẫn hiển thị là chênh lệch.
+    return f"=ROUND({expression},{_CHECK_ROUND_DIGITS.get()})"
 
 
 def _has_check_difference(value: Decimal | float | int) -> bool:
-    return _rounded_check_value(value) != Decimal(0)
+    """Mọi chênh lệch khác 0 đều là sai lệch, kể cả 0,01; không áp dụng dung sai."""
+    return _to_decimal(value) != 0
 
 
-def _format_vietnamese_number(value: Decimal | float | int) -> str:
-    rounded = _rounded_check_value(abs(value))
-    formatted = f"{rounded:,.2f}".replace(",", "_").replace(".", ",").replace("_", ".")
-    return formatted[:-3] if formatted.endswith(",00") else formatted
+def _document_decimal_places(tables: list[ExtractedTable]) -> int:
+    places = DEFAULT_CHECK_ROUND_DIGITS
+    for table in tables:
+        for row in table.rows:
+            for value in row:
+                number = parse_accounting_number(value)
+                if number is not None:
+                    places = max(places, -number.as_tuple().exponent)
+    return min(places, MAX_CHECK_ROUND_DIGITS)
 
 
-def _arithmetic_difference_message(value: Decimal | float | int) -> str:
-    return f"Kiểm tra số học: chênh lệch {_format_vietnamese_number(value)}."
+def _table_has_fractional_values(table: ExtractedTable) -> bool:
+    return any(
+        (number := parse_accounting_number(value)) is not None
+        and number != number.to_integral_value()
+        for row in table.rows
+        for value in row
+    )
 
 
-def _mark_arithmetic_difference(cell, value: Decimal | float | int) -> None:
+def _arithmetic_difference_message(
+    value: Decimal | float | int,
+    presented: Decimal | float | int | None = None,
+    check_label: str = "Kiểm tra số học",
+    calculation: str = "",
+) -> str:
+    difference = _to_decimal(value)
+    if presented is None:
+        return f"{check_label}: chênh lệch {_format_vietnamese_number(difference)}."
+    presented_value = _to_decimal(presented)
+    recalculated = presented_value - difference
+    calculation_text = f" ({calculation})" if calculation else ""
+    return (
+        f"{check_label}: số trình bày {_format_amount(presented_value)}; "
+        f"số tính lại{calculation_text} {_format_amount(recalculated)}; "
+        f"chênh lệch {_format_amount(difference)}."
+    )
+
+
+def _apply_decimal_number_format(worksheet) -> None:
+    """Hiển thị đủ hai chữ số thập phân cho bảng có số lẻ (ví dụ USD).
+
+    Định dạng số nguyên sẽ làm 1.504.352,85 hiển thị thành 1.504.353 và che chênh lệch
+    0,01 ở ô kiểm tra; bảng chỉ có số nguyên giữ nguyên định dạng hiện hành.
+    """
+    for row in worksheet.iter_rows():
+        for cell in row:
+            if cell.number_format == ACCOUNTING_NUMBER_FORMAT:
+                cell.number_format = DECIMAL_ACCOUNTING_NUMBER_FORMAT
+
+
+def _cell_decimal(cell) -> Decimal | None:
+    value = _merged_anchor_cell(cell).value
+    if isinstance(value, bool) or not isinstance(value, (int, float, Decimal)):
+        return None
+    return _to_decimal(value)
+
+
+def _register_finding_detail(cell, detail: FindingDetail) -> None:
+    registry = _FINDING_DETAILS.get()
+    if registry is not None:
+        registry[(cell.parent.title, cell.coordinate)] = detail
+
+
+def _finding_detail_for(cell) -> FindingDetail | None:
+    registry = _FINDING_DETAILS.get()
+    if registry is None:
+        return None
+    return registry.get((cell.parent.title, cell.coordinate))
+
+
+def _mark_arithmetic_difference(
+    cell,
+    value: Decimal | float | int,
+    *,
+    check_label: str = "Kiểm tra số học",
+    calculation: str = "",
+    message: str = "",
+    detail: FindingDetail | None = None,
+    short_check: str = "",
+    period: str = "",
+) -> None:
     cell = _merged_anchor_cell(cell)
     cell.fill = WARNING_FILL
-    cell.comment = Comment(_arithmetic_difference_message(value), "CHECK_FS_RULE")
+    presented = _cell_decimal(cell)
+    difference = _to_decimal(value)
+    text = message or _arithmetic_difference_message(
+        difference,
+        presented,
+        check_label,
+        calculation,
+    )
+    cell.comment = Comment(text, DIFFERENCE_COMMENT_AUTHOR)
+    _register_finding_detail(
+        cell,
+        detail
+        or FindingDetail(
+            check=short_check or _short_check_label(check_label),
+            note=calculation,
+            period=period,
+            first_label="Trình bày",
+            first_value=presented,
+            second_label="Tính lại",
+            second_value=presented - difference if presented is not None else None,
+            difference=difference,
+        ),
+    )
+
+
+def _mark_review(cell, message: str, detail: FindingDetail | None = None) -> None:
+    cell = _merged_anchor_cell(cell)
+    cell.fill = WARNING_FILL
+    if cell.comment is None or cell.comment.author not in FINDING_COMMENT_AUTHORS:
+        cell.comment = Comment(message, REVIEW_COMMENT_AUTHOR)
+        _register_finding_detail(cell, detail or FindingDetail(check="", note=message))
+
+
+def _short_check_label(check_label: str) -> str:
+    """Bỏ tiền tố "Kiểm tra" để nhãn loại kiểm tra ngắn gọn trên giao diện."""
+    label = check_label.removeprefix("Kiểm tra ").strip()
+    return label[:1].upper() + label[1:] if label else ""
 
 
 def _merged_anchor_cell(cell):
@@ -164,7 +310,45 @@ def build_audit_workbook_with_comment_targets(
     summary_sort: str = SUMMARY_SORT_TABLE_INDEX,
     note_reconciliation_sort: str = NOTE_SORT_TABLE_INDEX,
 ) -> tuple[bytes, list[WordCommentTarget]]:
+    report = build_audit_report(
+        tables,
+        rule_pack=rule_pack,
+        summary_sort=summary_sort,
+        note_reconciliation_sort=note_reconciliation_sort,
+    )
+    return report.workbook_bytes, report.comment_targets
+
+
+def build_audit_report(
+    tables: list[ExtractedTable],
+    *,
+    rule_pack: RulePack = TT200_RULE_PACK,
+    summary_sort: str = SUMMARY_SORT_TABLE_INDEX,
+    note_reconciliation_sort: str = NOTE_SORT_TABLE_INDEX,
+) -> AuditWorkbookReport:
+    """Tạo workbook, danh sách comment Word và trạng thái kiểm tra của từng bảng."""
     _validate_sort_option(summary_sort, VALID_SUMMARY_SORTS, "00_Tong_hop")
+    round_digits_token = _CHECK_ROUND_DIGITS.set(_document_decimal_places(tables))
+    details_token = _FINDING_DETAILS.set({})
+    try:
+        return _build_audit_report(
+            tables,
+            rule_pack=rule_pack,
+            summary_sort=summary_sort,
+            note_reconciliation_sort=note_reconciliation_sort,
+        )
+    finally:
+        _FINDING_DETAILS.reset(details_token)
+        _CHECK_ROUND_DIGITS.reset(round_digits_token)
+
+
+def _build_audit_report(
+    tables: list[ExtractedTable],
+    *,
+    rule_pack: RulePack,
+    summary_sort: str,
+    note_reconciliation_sort: str,
+) -> AuditWorkbookReport:
     workbook = Workbook()
     summary = workbook.active
     summary.title = "00_Tong_hop"
@@ -186,21 +370,31 @@ def build_audit_workbook_with_comment_targets(
     }
     results: list[TableCheckResult] = []
     worksheets_by_index = {}
+    # Layout, mã dòng và giá trị của các báo cáo chính được tính một lần thay vì lặp lại
+    # cho từng bảng Thuyết minh.
+    primary_tables = [table for table in tables if table.statement_type in PRIMARY_STATEMENT_TYPES]
+    layout_by_index = {table.index: _table_layout(table) for table in primary_tables}
+    code_rows_by_index = {
+        table.index: _code_row_lookup(
+            table,
+            layout_by_index[table.index],
+            data_start_row=DATA_START_ROW,
+        )
+        for table in primary_tables
+    }
+    values_by_index = {
+        table.index: _table_value_lookup(table, layout_by_index[table.index])
+        for table in primary_tables
+    }
     for table_position, table in enumerate(tables):
         peer_tables = _nearest_statement_tables(tables, table)
         peer_sheets = {peer.statement_type: sheet_names[peer.index] for peer in peer_tables.values()}
-        peer_layouts = {peer.statement_type: _table_layout(peer) for peer in peer_tables.values()}
+        peer_layouts = {peer.statement_type: layout_by_index[peer.index] for peer in peer_tables.values()}
         peer_code_rows = {
-            peer.statement_type: _code_row_lookup(
-                peer,
-                _table_layout(peer),
-                data_start_row=DATA_START_ROW,
-            )
-            for peer in peer_tables.values()
+            peer.statement_type: code_rows_by_index[peer.index] for peer in peer_tables.values()
         }
         peer_values = {
-            peer.statement_type: _table_value_lookup(peer, _table_layout(peer))
-            for peer in peer_tables.values()
+            peer.statement_type: values_by_index[peer.index] for peer in peer_tables.values()
         }
         sheet_name = sheet_names[table.index]
         worksheet = workbook.create_sheet(sheet_name)
@@ -228,6 +422,8 @@ def build_audit_workbook_with_comment_targets(
                 table,
                 maturity_split_parent=table.index in maturity_parent_indexes,
             )
+        if _table_has_fractional_values(table):
+            _apply_decimal_number_format(worksheet)
         results.append(result)
 
     summary_tables = _sort_summary_tables(tables, results, summary_sort)
@@ -265,7 +461,28 @@ def build_audit_workbook_with_comment_targets(
     stream = BytesIO()
     workbook.save(stream)
     stream.seek(0)
-    return stream.getvalue(), comment_targets
+    return AuditWorkbookReport(
+        workbook_bytes=stream.getvalue(),
+        comment_targets=comment_targets,
+        table_results=tuple(results),
+    )
+
+
+DETERMINISTIC_MATCH_TYPES = frozenset(
+    {
+        "Tên dòng và Thuyết minh",
+        "Tiêu đề kỳ hạn và Thuyết minh",
+        "Mã Thuyết minh + tên + Tổng cộng",
+        "Tên dòng + PL",
+        "Tên dòng + mã BS",
+        "Tên dòng + mã CF",
+        "Vốn đã góp + mã BS",
+        "Tên bảng + Tổng cộng",
+        "Chi phí khấu hao -> LCTTTT",
+        "Mã số BCTC",
+    }
+)
+HIGH_CONFIDENCE_MATCH_SCORE = 80.0
 
 
 def _build_word_comment_targets(
@@ -285,105 +502,34 @@ def _build_word_comment_targets(
                     row=DATA_START_ROW + row_index,
                     column=column_index + 1,
                 )
-                if cell.fill.fgColor.rgb not in {COLOR_YELLOW, f"00{COLOR_YELLOW}"}:
+                # Chỉ comment do rule kiểm tra tạo mới được chuyển sang Word; cảnh báo định
+                # dạng số (tác giả CHECK_FS) và ô chỉ tô màu không tạo comment Word.
+                if cell.comment is None:
                     continue
-                # Comment có sẵn tại vùng dữ liệu hiện chỉ dùng cho cảnh báo định dạng số.
-                # Các cảnh báo này vẫn xuất hiện trong Excel nhưng không chuyển sang Word.
-                if cell.comment is not None:
-                    if cell.comment.author != "CHECK_FS_RULE":
-                        continue
-                    message = cell.comment.text
-                else:
-                    message = "Kiểm tra số học: Có chênh lệch."
-
-                msg_lower = message.lower()
-                is_review_only = (
-                    "cần xác minh" in msg_lower
-                    or "thiếu hoặc không hợp lệ" in msg_lower
-                    or "thiếu" in msg_lower
-                    or "không hợp lệ" in msg_lower
-                )
-                category = (
-                    WordCommentCategory.REVIEW
-                    if is_review_only
-                    else WordCommentCategory.DIFFERENCE
-                )
-
+                category = FINDING_COMMENT_AUTHORS.get(cell.comment.author)
+                if category is None:
+                    continue
                 targets.append(
                     WordCommentTarget(
                         table.index,
                         row_index,
                         column_index,
-                        message,
+                        cell.comment.text,
                         category,
+                        _finding_detail_for(cell),
                     )
                 )
-    DETERMINISTIC_MATCH_TYPES = {
-        "Tên dòng và Thuyết minh",
-        "Tiêu đề kỳ hạn và Thuyết minh",
-        "Mã Thuyết minh + tên + Tổng cộng",
-        "Tên dòng + PL",
-        "Tên dòng + mã BS",
-        "Tên dòng + mã CF",
-        "Vốn đã góp + mã BS",
-        "Tên bảng + Tổng cộng",
-        "Chi phí khấu hao -> LCTTTT",
-        "Mã số BCTC",
-    }
+
     for match in note_matches:
-        rich_match = match.match_type in DETERMINISTIC_MATCH_TYPES
-        if match.status == "Matched":
-            continue
-        if (
-            match.status == "Statement not found"
-            and not match.statement_code
-            and not rich_match
-        ):
-            continue
         table = table_by_index.get(match.note_table_index)
         if table is None:
             continue
-        references: list[str] = []
-        if match.status == "Difference":
-            references = [
-                reference
-                for reference, difference in (
-                    (match.note_current_cell, match.current_difference),
-                    (match.note_prior_cell, match.prior_difference),
-                )
-                if reference
-                and difference is not None
-                and _has_check_difference(difference)
-            ]
-            if not references:
-                references = [match.note_current_cell or match.note_prior_cell]
-        elif rich_match:
-            references = [match.note_current_cell, match.note_prior_cell]
-            if (
-                match.status == "Statement not found"
-                and match.match_type == "Tên dòng + mã BS"
-                and match.note_current == Decimal(0)
-                and match.note_prior == Decimal(0)
-            ):
-                references = [match.note_current_cell or match.note_prior_cell]
-        else:
-            references = [match.note_current_cell or match.note_prior_cell]
-        row_index, column_index = _first_meaningful_source_cell(table)
-        is_high_confidence = (
-            rich_match
-            and (match.match_score == 0.0 or match.match_score >= 80.0)
-            and not _is_component_difference(match, table)
-        )
-        category = (
-            WordCommentCategory.DIFFERENCE
-            if match.status == "Difference" and is_high_confidence
-            else WordCommentCategory.REVIEW
-        )
-        for reference in {reference for reference in references if reference} or {""}:
-            if reference:
-                source_location = _source_location_from_excel_reference(reference, table)
-                if source_location is not None:
-                    row_index, column_index = source_location
+        category = _note_match_comment_category(match, table)
+        for reference in _word_note_comment_references(match, table):
+            source_location = _source_location_from_excel_reference(reference, table)
+            if source_location is None:
+                continue
+            row_index, column_index = source_location
             targets.append(
                 WordCommentTarget(
                     table.index,
@@ -391,9 +537,109 @@ def _build_word_comment_targets(
                     column_index,
                     _word_note_comment_message(match, reference, table),
                     category,
+                    _note_match_detail(match, reference, table),
                 )
             )
     return targets
+
+
+def _note_match_period(match: NoteMatchResult, reference: str):
+    """Chọn kỳ (nhãn, số TM, số BCTC, chênh lệch) ứng với ô TM được neo comment."""
+    periods = (
+        (match.note_current_cell, "kỳ này", match.note_current, match.statement_current, match.current_difference),
+        (match.note_prior_cell, "kỳ trước", match.note_prior, match.statement_prior, match.prior_difference),
+    )
+    referenced = [period for period in periods if period[0] == reference] or [periods[0]]
+    _, period_label, note_value, statement_value, difference = next(
+        (
+            period
+            for period in referenced
+            if period[4] is not None and _has_check_difference(period[4])
+        ),
+        referenced[0],
+    )
+    return period_label, note_value, statement_value, difference
+
+
+def _note_match_detail(
+    match: NoteMatchResult,
+    reference: str,
+    table: ExtractedTable | None,
+) -> FindingDetail:
+    source = match.source or "BCTC"
+    code = f" mã {match.statement_code}" if match.statement_code else ""
+    check = f"Đối chiếu TM – {source}{code}"
+    if match.status == "Statement not found":
+        return FindingDetail(check=f"Đối chiếu TM – {source}", note="Chưa tìm thấy chỉ tiêu BCTC phù hợp")
+    period_label, note_value, statement_value, difference = _note_match_period(match, reference)
+    note = ""
+    if _note_match_comment_category(match, table) == WordCommentCategory.REVIEW:
+        note = (
+            "Chênh lệch bằng một số liệu thành phần, nghi vấn chọn nhầm dòng"
+            if _is_component_difference(match, table)
+            else "Chỉ tiêu ghép theo suy luận"
+        )
+    return FindingDetail(
+        check=check,
+        note=note,
+        period=period_label,
+        first_label=source,
+        first_value=statement_value,
+        second_label="TM",
+        second_value=note_value,
+        difference=difference,
+    )
+
+
+def _word_note_comment_references(
+    match: NoteMatchResult,
+    table: ExtractedTable | None = None,
+) -> list[str]:
+    """Chọn ô TM được neo comment Word cho một kết quả đối chiếu.
+
+    Không neo comment khi không xác định được ô số liệu cụ thể; các trường hợp
+    ``Không tìm thấy số liệu TM`` là giới hạn của bộ nhận diện, chỉ ghi ở Excel.
+    """
+    if match.status == "Difference":
+        is_review = _note_match_comment_category(match, table) == WordCommentCategory.REVIEW
+        references = [
+            reference
+            for reference, difference, note_value in (
+                (match.note_current_cell, match.current_difference, match.note_current),
+                (match.note_prior_cell, match.prior_difference, match.note_prior),
+            )
+            if reference
+            and difference is not None
+            and _has_check_difference(difference)
+            # Ghép suy luận vào ô TM bằng 0/gạch ngang là dấu hiệu chọn nhầm ô, chỉ ghi Excel.
+            and not (is_review and note_value == 0)
+        ]
+        if references or is_review:
+            return references
+        fallback = match.note_current_cell or match.note_prior_cell
+        return [fallback] if fallback else []
+    if match.status == "Statement not found" and match.match_type in DETERMINISTIC_MATCH_TYPES:
+        # Bảng TM toàn số 0/gạch ngang thường không có dòng tương ứng trên BCTC.
+        known_values = [value for value in (match.note_current, match.note_prior) if value is not None]
+        if known_values and all(value == 0 for value in known_values):
+            return []
+        reference = match.note_current_cell or match.note_prior_cell
+        return [reference] if reference else []
+    return []
+
+
+def _note_match_comment_category(
+    match: NoteMatchResult,
+    table: ExtractedTable | None,
+) -> WordCommentCategory:
+    is_high_confidence = (
+        match.match_type in DETERMINISTIC_MATCH_TYPES
+        and (match.match_score == 0.0 or match.match_score >= HIGH_CONFIDENCE_MATCH_SCORE)
+        and not _is_component_difference(match, table)
+    )
+    if match.status == "Difference" and is_high_confidence:
+        return WordCommentCategory.DIFFERENCE
+    return WordCommentCategory.REVIEW
 
 
 def _source_location_from_excel_reference(
@@ -432,36 +678,30 @@ def _merged_anchor_reference(table: ExtractedTable, reference: str) -> str:
     return f"{get_column_letter(column_index + 1)}{row_index + DATA_START_ROW}"
 
 
-def _first_meaningful_source_cell(table: ExtractedTable) -> tuple[int, int]:
-    for row_index, row in enumerate(table.rows):
-        for column_index, value in enumerate(row):
-            if clean_text(value):
-                return row_index, column_index
-    return 0, 0
-
-
 def _is_component_difference(match: NoteMatchResult, table: ExtractedTable | None) -> bool:
+    """Chênh lệch bằng đúng một ô thành phần cùng cột kỳ của TM (nghi vấn lấy nhầm dòng)."""
     if match.status != "Difference" or table is None:
         return False
-    diffs = [
-        abs(d)
-        for d in (match.current_difference, match.prior_difference)
-        if d is not None and abs(d) > Decimal("0.0001")
-    ]
-    if not diffs:
+    differences = {
+        abs(difference)
+        for difference in (match.current_difference, match.prior_difference)
+        if difference is not None and _has_check_difference(difference)
+    }
+    if not differences:
         return False
 
-    skip_values = {
-        match.note_current,
-        match.note_prior,
-        match.statement_current,
-        match.statement_prior,
+    referenced_cells = {
+        location
+        for reference in (match.note_current_cell, match.note_prior_cell)
+        if reference and (location := _source_location_from_excel_reference(reference, table))
     }
-
-    for row in table.rows:
-        for cell in row:
-            parsed = parse_accounting_number(cell)
-            if parsed is not None and abs(parsed) in diffs and parsed not in skip_values:
+    columns = {column_index for _, column_index in referenced_cells}
+    for row_index, row in enumerate(table.rows):
+        for column_index in columns:
+            if (row_index, column_index) in referenced_cells or column_index >= len(row):
+                continue
+            parsed = parse_accounting_number(row[column_index])
+            if parsed is not None and abs(parsed) in differences:
                 return True
     return False
 
@@ -471,67 +711,38 @@ def _word_note_comment_message(
     reference: str = "",
     table: ExtractedTable | None = None,
 ) -> str:
-    status = NOTE_STATUS_LABELS.get(match.status, match.status)
-    referenced_differences = [
-        difference
-        for cell_reference, difference in (
-            (match.note_current_cell, match.current_difference),
-            (match.note_prior_cell, match.prior_difference),
-        )
-        if reference and reference == cell_reference and difference is not None
-    ]
-    difference = next(
-        (value for value in referenced_differences if _has_check_difference(value)),
-        referenced_differences[0] if referenced_differences else match.current_difference,
-    )
-    rich_match = match.match_type in {
-        "Tên dòng và Thuyết minh",
-        "Tiêu đề kỳ hạn và Thuyết minh",
-        "Mã Thuyết minh + tên + Tổng cộng",
-        "Tên dòng + PL",
-        "Tên dòng + mã BS",
-        "Tên dòng + mã CF",
-        "Vốn đã góp + mã BS",
-        "Tên bảng + Tổng cộng",
-        "Chi phí khấu hao -> LCTTTT",
-        "Mã số BCTC",
-    }
-    component_diff = _is_component_difference(match, table)
-
-    if match.status == "Difference":
-        if component_diff:
-            formatted = _format_vietnamese_number(difference) if difference is not None else ""
-            return (
-                f"Đối chiếu TM–BCTC (Cần xem xét): Số liệu TM đọc được nghi vấn là chỉ tiêu thành phần. "
-                f"Chênh lệch so với BCTC là {formatted} VND. Đề nghị kiểm toán viên kiểm tra lại."
-            )
-        if not rich_match or (match.match_score > 0.0 and match.match_score < 80.0):
-            diff_text = f" (chênh lệch {_format_vietnamese_number(difference)} VND)" if (difference is not None and _has_check_difference(difference)) else ""
-            return (
-                f"Đối chiếu TM–BCTC (Cần xem xét): Phát hiện số liệu nghi vấn chưa khớp giữa TM và BCTC"
-                f"{diff_text}. Đề nghị kiểm toán viên kiểm tra lại cấu trúc Thuyết minh."
-            )
-
-    if not rich_match:
-        if difference is not None and _has_check_difference(difference):
-            formatted = _format_vietnamese_number(difference)
-            return f"Đối chiếu TM–BCTC (Cần xem xét): Chênh lệch suy luận {formatted} VND."
-        return f"Đối chiếu TM–BCTC: {status}."
     source = match.source or "BCTC"
     target = match.item_name or match.note_title or "chỉ tiêu phù hợp"
+    code = f", mã số {match.statement_code}" if match.statement_code else ""
     if match.status == "Statement not found":
         return (
-            f"Đối chiếu TM–{source}: Chưa tìm thấy chỉ tiêu phù hợp cho “{target}”. "
+            f"Đối chiếu TM–{source}: Chưa tìm thấy chỉ tiêu BCTC phù hợp cho “{target}”. "
             "Cần kiểm toán viên xác minh."
         )
-    code = f", mã số {match.statement_code}" if match.statement_code else ""
-    prefix = f"Đối chiếu TM–{source}: Tìm thấy tại “{target}”{code}."
-    if difference is not None and _has_check_difference(difference):
-        formatted = _format_vietnamese_number(difference)
-        return f"{prefix} Có chênh lệch {formatted} VND."
-    if match.status == "Note value not found":
-        return f"{prefix} Chưa tìm thấy số liệu TM tương ứng."
-    return f"{prefix} Số liệu khớp."
+
+    period_label, note_value, statement_value, difference = _note_match_period(match, reference)
+    if match.status != "Difference" or difference is None or not _has_check_difference(difference):
+        status = NOTE_STATUS_LABELS.get(match.status, match.status)
+        return f"Đối chiếu TM–{source}: “{target}”{code}: {status}."
+
+    comparison_parts = []
+    if statement_value is not None:
+        comparison_parts.append(f"{source} {period_label} {_format_amount(statement_value)}")
+    if note_value is not None:
+        comparison_parts.append(f"TM {_format_amount(note_value)}")
+    comparison_parts.append(f"chênh lệch {_format_amount(difference)}")
+    comparison = "; ".join(comparison_parts) + "."
+    if _note_match_comment_category(match, table) == WordCommentCategory.DIFFERENCE:
+        return f"Đối chiếu TM–{source}: “{target}”{code}: {comparison}"
+    reason = (
+        "chênh lệch bằng đúng một số liệu thành phần trong bảng TM, nghi vấn chọn nhầm dòng tổng"
+        if _is_component_difference(match, table)
+        else "chỉ tiêu được ghép theo suy luận, chưa đủ căn cứ kết luận sai lệch"
+    )
+    return (
+        f"Đối chiếu TM–{source} (cần xem xét): “{target}”{code}: {comparison} "
+        f"Lý do: {reason}."
+    )
 
 
 def save_audit_workbook(
@@ -724,7 +935,7 @@ def _write_table_sheet(
     primary_sheets: dict[StatementType, str],
     primary_layouts: dict[StatementType, TableLayout],
     primary_code_rows: dict[StatementType, dict[str, int]],
-    primary_values: dict[StatementType, dict[str, dict[int, float]]],
+    primary_values: dict[StatementType, dict[str, dict[int, Decimal]]],
     *,
     rule_pack: RulePack,
     previous_table: ExtractedTable | None = None,
@@ -1056,6 +1267,7 @@ def _is_non_reconcilable_note_table(table: ExtractedTable) -> bool:
         or _is_related_party_non_total_table(table)
         or _is_future_lease_commitment_table(table)
         or _is_single_row_off_balance_table(table)
+        or is_restated_comparative_note(table)
     )
 
 
@@ -1237,7 +1449,15 @@ def _write_vertical_note_checks(worksheet, table: ExtractedTable, max_cols: int)
                 continue
             sum_range = _vertical_sum_range(table, target_row, numeric_col)
             if sum_range is not None:
-                column_checks.append((numeric_col, "sum", sum_range))
+                deduction_header = _deduction_header_in_range(table, *sum_range)
+                if deduction_header is not None and _deduction_is_subtracted(
+                    table, sum_range[0], deduction_header, sum_range[1], numeric_col
+                ):
+                    column_checks.append(
+                        (numeric_col, "sum_less_deduction", (*sum_range, deduction_header))
+                    )
+                else:
+                    column_checks.append((numeric_col, "sum", sum_range))
         if column_checks:
             prepared_checks.append((target_row, column_checks))
 
@@ -1258,56 +1478,73 @@ def _write_vertical_note_checks(worksheet, table: ExtractedTable, max_cols: int)
         for numeric_col, check_kind, source_rows in column_checks:
             excel_col = numeric_col + 1
             col_letter = get_column_letter(excel_col)
-            start_row, end_row = source_rows
+            start_row, end_row = source_rows[0], source_rows[1]
+            start_excel_row = start_row + DATA_START_ROW
+            end_excel_row = end_row + DATA_START_ROW
             if check_kind in {"net_revenue", "deduction_net", "fixed_asset_net"}:
                 expression = (
                     f"{col_letter}{target_excel_row}"
-                    f"-{col_letter}{start_row + DATA_START_ROW}"
+                    f"-{col_letter}{start_excel_row}"
                     f"{'+' if check_kind in {'net_revenue', 'deduction_net'} else '-'}"
-                    f"{col_letter}{end_row + DATA_START_ROW}"
+                    f"{col_letter}{end_excel_row}"
+                )
+            elif check_kind == "sum_less_deduction":
+                deduction_excel_row = source_rows[2] + DATA_START_ROW
+                expression = (
+                    f"{col_letter}{target_excel_row}"
+                    f"-(SUM({col_letter}{start_excel_row}:{col_letter}{deduction_excel_row - 1})"
+                    f"-SUM({col_letter}{deduction_excel_row + 1}:{col_letter}{end_excel_row}))"
                 )
             else:
                 expression = (
                     f"{col_letter}{target_excel_row}"
-                    f"-SUM({col_letter}{start_row + DATA_START_ROW}:"
-                    f"{col_letter}{end_row + DATA_START_ROW})"
+                    f"-SUM({col_letter}{start_excel_row}:"
+                    f"{col_letter}{end_excel_row})"
                 )
             formula = _excel_check_formula(expression)
             diff_cell = worksheet.cell(row=output_row, column=excel_col, value=formula)
             diff_cell.number_format = CHECK_DIFFERENCE_NUMBER_FORMAT
             diff_cell.border = THIN_BORDER
             formula_cells.append(diff_cell.coordinate)
+            target_value = _numeric_cell_value(worksheet, target_excel_row, excel_col)
             if check_kind in {"net_revenue", "deduction_net", "fixed_asset_net"}:
                 second_coefficient = (
                     1 if check_kind in {"net_revenue", "deduction_net"} else -1
                 )
                 direct_diff = (
-                    _numeric_cell_value(worksheet, target_excel_row, excel_col)
-                    - _numeric_cell_value(
-                        worksheet,
-                        start_row + DATA_START_ROW,
-                        excel_col,
-                    )
-                    + second_coefficient * _numeric_cell_value(
-                        worksheet,
-                        end_row + DATA_START_ROW,
-                        excel_col,
-                    )
+                    target_value
+                    - _numeric_cell_value(worksheet, start_excel_row, excel_col)
+                    + second_coefficient * _numeric_cell_value(worksheet, end_excel_row, excel_col)
                 )
+                operator = "−" if second_coefficient == 1 else "+"
+                calculation = (
+                    f"“{_row_label(table, start_row)}” {operator} “{_row_label(table, end_row)}”"
+                )
+            elif check_kind == "sum_less_deduction":
+                deduction_excel_row = source_rows[2] + DATA_START_ROW
+                base_total = _sum_numeric_range(
+                    worksheet, start_excel_row, deduction_excel_row - 1, excel_col
+                )
+                deduction_total = _sum_numeric_range(
+                    worksheet, deduction_excel_row + 1, end_excel_row, excel_col
+                )
+                direct_diff = target_value - (base_total - deduction_total)
+                calculation = "cộng phần gốc trừ phần sau dòng “Trừ”"
             else:
-                direct_diff = _numeric_cell_value(
-                    worksheet,
-                    target_excel_row,
-                    excel_col,
-                ) - _sum_numeric_range(
-                    worksheet,
-                    start_row + DATA_START_ROW,
-                    end_row + DATA_START_ROW,
-                    excel_col,
+                direct_diff = target_value - _sum_numeric_range(
+                    worksheet, start_excel_row, end_excel_row, excel_col
+                )
+                calculation = (
+                    f"dòng “{_row_label(table, start_row)}”"
+                    if start_row == end_row
+                    else f"cộng từ “{_row_label(table, start_row)}” đến “{_row_label(table, end_row)}”"
                 )
             if _has_check_difference(direct_diff):
                 _mark_arithmetic_difference(
-                    worksheet.cell(row=target_excel_row, column=excel_col), direct_diff
+                    worksheet.cell(row=target_excel_row, column=excel_col),
+                    direct_diff,
+                    check_label="Kiểm tra cộng dọc",
+                    calculation=calculation,
                 )
         output_row += 1
 
@@ -1330,7 +1567,6 @@ def _write_horizontal_note_checks(worksheet, table: ExtractedTable, max_cols: in
     for row_idx, row in enumerate(table.rows):
         excel_row = row_idx + DATA_START_ROW
         row_formulas: list[str] = []
-        row_has_issue = False
         for total_col in total_cols:
             if _is_merged_continuation(table, row_idx, total_col - 1):
                 continue
@@ -1355,9 +1591,11 @@ def _write_horizontal_note_checks(worksheet, table: ExtractedTable, max_cols: in
                 _numeric_cell_value(worksheet, excel_row, col_idx) for col_idx in detail_cols
             )
             if _has_check_difference(direct_diff):
-                row_has_issue = True
                 _mark_arithmetic_difference(
-                    worksheet.cell(row=excel_row, column=total_col), direct_diff
+                    worksheet.cell(row=excel_row, column=total_col),
+                    direct_diff,
+                    check_label="Kiểm tra cộng ngang",
+                    calculation=f"cộng {len(detail_cols)} cột chi tiết của dòng “{_row_label(table, row_idx)}”",
                 )
         if not row_formulas:
             continue
@@ -1456,7 +1694,10 @@ def _write_tax_rollforward_checks(
         direct_diff = closing - opening - payable + abs(paid)
         if _has_check_difference(direct_diff):
             _mark_arithmetic_difference(
-                worksheet.cell(row=excel_row, column=closing_col), direct_diff
+                worksheet.cell(row=excel_row, column=closing_col),
+                direct_diff,
+                check_label="Kiểm tra biến động thuế",
+                calculation=f"số đầu năm + số phải nộp − số đã nộp của “{_row_label(table, row_index)}”",
             )
     return formula_cells
 
@@ -1643,7 +1884,10 @@ def _write_income_tax_schedule_checks(worksheet, table: ExtractedTable) -> list[
             direct_diff = target_value - expected
             if _has_check_difference(direct_diff):
                 _mark_arithmetic_difference(
-                    worksheet.cell(row=target_excel_row, column=col), direct_diff
+                    worksheet.cell(row=target_excel_row, column=col),
+                    direct_diff,
+                    check_label="Kiểm tra bảng tính thuế TNDN",
+                    calculation=description,
                 )
         output_row += 1
     return formula_cells
@@ -1724,7 +1968,10 @@ def _write_receivable_net_continuation_checks(
         direct_diff = net_value - total_value - provision_value
         if _has_check_difference(direct_diff):
             _mark_arithmetic_difference(
-                worksheet.cell(row=net_excel_row, column=net_col), direct_diff
+                worksheet.cell(row=net_excel_row, column=net_col),
+                direct_diff,
+                check_label="Kiểm tra giá trị thuần",
+                calculation="tổng cộng bảng trước + dự phòng",
             )
     return formula_cells
 
@@ -1999,12 +2246,13 @@ def _finalize_result(worksheet, max_cols: int, result: TableCheckResult) -> Tabl
 
 
 def _count_direct_issue_cells(worksheet, max_cols: int = 0) -> int:
+    """Đếm ô có sai lệch xác định; cảnh báo định dạng và trường hợp cần xem xét không tính."""
     count = 0
     col_limit = max_cols if max_cols > 0 else worksheet.max_column
     for row_idx in range(DATA_START_ROW, worksheet.max_row + 1):
         for col_idx in range(1, col_limit + 1):
-            cell = worksheet.cell(row=row_idx, column=col_idx)
-            if cell.fill and cell.fill.fgColor and COLOR_YELLOW in str(cell.fill.fgColor.rgb):
+            comment = worksheet.cell(row=row_idx, column=col_idx).comment
+            if comment is not None and comment.author == DIFFERENCE_COMMENT_AUTHOR:
                 count += 1
     return count
 
@@ -2013,13 +2261,19 @@ def _write_sheet_legend(worksheet) -> None:
     pass
 
 
-def _numeric_cell_value(worksheet, row_idx: int, col_idx: int) -> float:
+def _numeric_cell_value(worksheet, row_idx: int, col_idx: int) -> Decimal:
+    """Đọc lại giá trị số của ô dưới dạng Decimal để phép kiểm tra không có sai số float."""
     value = worksheet.cell(row=row_idx, column=col_idx).value
-    return float(value) if isinstance(value, (int, float)) else 0.0
+    if isinstance(value, bool) or not isinstance(value, (int, float, Decimal)):
+        return Decimal(0)
+    return _to_decimal(value)
 
 
-def _sum_numeric_range(worksheet, row_start: int, row_end: int, col_idx: int) -> float:
-    return sum(_numeric_cell_value(worksheet, row_idx, col_idx) for row_idx in range(row_start, row_end + 1))
+def _sum_numeric_range(worksheet, row_start: int, row_end: int, col_idx: int) -> Decimal:
+    return sum(
+        (_numeric_cell_value(worksheet, row_idx, col_idx) for row_idx in range(row_start, row_end + 1)),
+        Decimal(0),
+    )
 
 
 def _add_single_issue_highlight(
@@ -2029,19 +2283,60 @@ def _add_single_issue_highlight(
     check_col: int,
     has_direct_issue: bool = False,
     direct_difference: Decimal | float | int | None = None,
+    *,
+    check_label: str = "Kiểm tra số học",
+    calculation: str = "",
+    message: str = "",
+    review_message: str = "",
+    review_only: bool = False,
+    short_check: str = "",
+    detail: FindingDetail | None = None,
+    review_detail: FindingDetail | None = None,
+    period: str = "",
 ) -> None:
+    """Tô điều kiện cho ô giá trị và ghi comment phát hiện khi Python xác định có vấn đề.
+
+    ``direct_difference`` bằng ``None`` nghĩa là không tính được (thiếu dữ liệu): khi đó
+    chỉ ghi comment cần xem xét, không bao giờ kết luận là sai lệch.
+    """
     value_letter = get_column_letter(value_col)
     check_letter = get_column_letter(check_col)
     worksheet.conditional_formatting.add(
         f"{value_letter}{row_idx}",
         FormulaRule(formula=[f"${check_letter}{row_idx}<>0"], fill=WARNING_FILL),
     )
-    if has_direct_issue:
-        cell = worksheet.cell(row=row_idx, column=value_col)
-        if direct_difference is None:
-            cell.fill = WARNING_FILL
+    if not has_direct_issue:
+        return
+    cell = worksheet.cell(row=row_idx, column=value_col)
+    if direct_difference is None:
+        if review_message:
+            _mark_review(cell, review_message, review_detail)
         else:
-            _mark_arithmetic_difference(cell, direct_difference)
+            _merged_anchor_cell(cell).fill = WARNING_FILL
+        return
+    if review_only:
+        _mark_review(
+            cell,
+            message
+            or _arithmetic_difference_message(
+                direct_difference,
+                _cell_decimal(cell),
+                f"{check_label} (cần xem xét)",
+                calculation,
+            ),
+            detail,
+        )
+        return
+    _mark_arithmetic_difference(
+        cell,
+        direct_difference,
+        check_label=check_label,
+        calculation=calculation,
+        message=message,
+        detail=detail,
+        short_check=short_check,
+        period=period,
+    )
 
 
 def _add_pair_issue_highlight(
@@ -2053,12 +2348,29 @@ def _add_pair_issue_highlight(
     has_prior_issue: bool = False,
     current_difference: Decimal | float | int | None = None,
     prior_difference: Decimal | float | int | None = None,
+    *,
+    current_options: dict | None = None,
+    prior_options: dict | None = None,
 ) -> None:
     _add_single_issue_highlight(
-        worksheet, row_idx, layout.current_col, check_col, has_current_issue, current_difference
+        worksheet,
+        row_idx,
+        layout.current_col,
+        check_col,
+        has_current_issue,
+        current_difference,
+        **{"period": "kỳ này", **(current_options or {})},
     )
+    if layout.prior_col == layout.current_col:
+        return
     _add_single_issue_highlight(
-        worksheet, row_idx, layout.prior_col, check_col + 1, has_prior_issue, prior_difference
+        worksheet,
+        row_idx,
+        layout.prior_col,
+        check_col + 1,
+        has_prior_issue,
+        prior_difference,
+        **{"period": "kỳ trước", **(prior_options or {})},
     )
 
 
@@ -2067,18 +2379,24 @@ def _calculate_arithmetic_diff(
     current_layout: TableLayout,
     rule: ArithmeticRule,
     period: str,
-    current_values: dict[str, dict[int, float]],
-    primary_values: dict[StatementType, dict[str, dict[int, float]]],
+    current_values: dict[str, dict[int, Decimal]],
+    primary_values: dict[StatementType, dict[str, dict[int, Decimal]]],
     primary_layouts: dict[StatementType, TableLayout],
-) -> float:
+) -> Decimal:
+    if period == "prior" and current_layout.current_col == current_layout.prior_col:
+        return Decimal(0)
     value_col = _period_col(current_type, current_type, period, current_layout, primary_layouts)
-    target = current_values.get(_normalize_code(rule.target_code), {}).get(value_col, 0.0)
-    total = 0.0
+    target = current_values.get(_normalize_code(rule.target_code), {}).get(value_col, Decimal(0))
+    total = Decimal(0)
     for term in rule.terms:
         source_type = term.source or current_type
+        if period == "prior" and source_type != current_type:
+            source_layout = primary_layouts.get(source_type)
+            if source_layout and source_layout.current_col == source_layout.prior_col:
+                continue
         source_col = _period_col(current_type, source_type, period, current_layout, primary_layouts)
         if source_type == current_type:
-            value = current_values.get(_normalize_code(term.code), {}).get(source_col, 0.0)
+            value = current_values.get(_normalize_code(term.code), {}).get(source_col, Decimal(0))
         else:
             value = _lookup_value(primary_values, source_type, term.code, source_col)
         total += term.coefficient * value
@@ -2088,20 +2406,26 @@ def _calculate_arithmetic_diff(
 def _calculate_sign_diff(
     rule: SignRule,
     value_col: int,
-    values: dict[str, dict[int, float]],
-) -> float:
-    value = values.get(_normalize_code(rule.code), {}).get(value_col, 0.0)
+    values: dict[str, dict[int, Decimal]],
+) -> Decimal:
+    value = values.get(_normalize_code(rule.code), {}).get(value_col, Decimal(0))
     if rule.expected == "positive":
-        return value if value < 0 else 0.0
-    return value if value > 0 else 0.0
+        return value if value < 0 else Decimal(0)
+    return value if value > 0 else Decimal(0)
 
 
 def _calculate_cross_period_diff(
     current_type: StatementType,
     rule: CrossPeriodRule,
-    primary_values: dict[StatementType, dict[str, dict[int, float]]],
+    primary_values: dict[StatementType, dict[str, dict[int, Decimal]]],
     primary_layouts: dict[StatementType, TableLayout],
-) -> float:
+) -> Decimal:
+    target_layout = primary_layouts.get(current_type)
+    source_layout = primary_layouts.get(rule.source)
+    if rule.target_period == "prior" and target_layout and target_layout.current_col == target_layout.prior_col:
+        return Decimal(0)
+    if rule.source_period == "prior" and source_layout and source_layout.current_col == source_layout.prior_col:
+        return Decimal(0)
     target_col = _period_col(current_type, current_type, rule.target_period, primary_layouts[current_type], primary_layouts)
     source_col = _period_col(current_type, rule.source, rule.source_period, primary_layouts[current_type], primary_layouts)
     target = _lookup_value(primary_values, current_type, rule.target_code, target_col)
@@ -2110,12 +2434,12 @@ def _calculate_cross_period_diff(
 
 
 def _lookup_value(
-    primary_values: dict[StatementType, dict[str, dict[int, float]]],
+    primary_values: dict[StatementType, dict[str, dict[int, Decimal]]],
     statement_type: StatementType,
     code: str,
     value_col: int,
-) -> float:
-    return primary_values.get(statement_type, {}).get(_normalize_code(code), {}).get(value_col, 0.0)
+) -> Decimal:
+    return primary_values.get(statement_type, {}).get(_normalize_code(code), {}).get(value_col, Decimal(0))
 
 
 def _write_business_checks(
@@ -2125,7 +2449,7 @@ def _write_business_checks(
     primary_sheets: dict[StatementType, str],
     primary_layouts: dict[StatementType, TableLayout],
     primary_code_rows: dict[StatementType, dict[str, int]],
-    primary_values: dict[StatementType, dict[str, dict[int, float]]],
+    primary_values: dict[StatementType, dict[str, dict[int, Decimal]]],
     check_start_col: int,
     rule_pack: RulePack,
 ) -> TableCheckResult:
@@ -2221,8 +2545,8 @@ def _write_inline_arithmetic_check(
     primary_sheets: dict[StatementType, str],
     primary_layouts: dict[StatementType, TableLayout],
     primary_code_rows: dict[StatementType, dict[str, int]],
-    primary_values: dict[StatementType, dict[str, dict[int, float]]],
-    current_values: dict[str, dict[int, float]],
+    primary_values: dict[StatementType, dict[str, dict[int, Decimal]]],
+    current_values: dict[str, dict[int, Decimal]],
     current_typed_values,
     rule: ArithmeticRule,
     check_start_col: int,
@@ -2238,26 +2562,36 @@ def _write_inline_arithmetic_check(
         }
         if not component_codes:
             return False
+        actionable_cells = [
+            (code_rows[component_code], value_column)
+            for component_code in sorted(component_codes, key=lambda code: code_rows[code])
+            for value_column in dict.fromkeys((layout.current_col, layout.prior_col))
+            if not (
+                (typed_value := current_typed_values.get(component_code, {}).get(value_column))
+                is not None
+                and typed_value.status in {TableValueStatus.ZERO, TableValueStatus.DASH_ZERO}
+            )
+        ]
+        if not actionable_cells:
+            return False
+        # Một comment duy nhất cho mỗi rule thiếu mã đích, các ô thành phần còn lại chỉ tô màu.
         message = (
-            "Kiểm tra số học: Có mã thành phần nhưng thiếu mã đích "
-            f"{rule.target_code}."
+            f"Kiểm tra số học (cần xem xét): bảng không có dòng mã {rule.target_code} "
+            f"nên không kiểm tra được {_rule_formula_text(rule)}. "
+            "Cần xác minh doanh nghiệp không trình bày chỉ tiêu này hay bị thiếu dòng."
         )
-        has_actionable_component = False
-        for component_code in component_codes:
-            row = code_rows[component_code]
-            for value_column in {layout.current_col, layout.prior_col}:
-                typed_value = current_typed_values.get(component_code, {}).get(value_column)
-                if typed_value is not None and typed_value.status in {
-                    TableValueStatus.ZERO,
-                    TableValueStatus.DASH_ZERO,
-                }:
-                    continue
-                cell = worksheet.cell(row=row, column=value_column)
-                cell.fill = WARNING_FILL
-                if cell.comment is None:
-                    cell.comment = Comment(message, "CHECK_FS_RULE")
-                has_actionable_component = True
-        return has_actionable_component
+        first_row, first_column = actionable_cells[0]
+        _mark_review(
+            worksheet.cell(row=first_row, column=first_column),
+            message,
+            FindingDetail(
+                check=_rule_formula_text(rule, compact=True),
+                note=f"Bảng không có dòng mã {rule.target_code}, chưa kiểm tra được",
+            ),
+        )
+        for row, value_column in actionable_cells[1:]:
+            _merged_anchor_cell(worksheet.cell(row=row, column=value_column)).fill = WARNING_FILL
+        return True
 
     if all(term.source is None for term in rule.terms) and not any(
         _normalize_code(term.code) in code_rows for term in rule.terms
@@ -2312,6 +2646,7 @@ def _write_inline_arithmetic_check(
         else:
             formula_cells.append(diff_cell.coordinate)
 
+    current_result = prior_result = None
     if all(term.source is None for term in rule.terms):
         current_result = calculate_same_table_arithmetic(rule, layout.current_col, current_typed_values)
         prior_result = calculate_same_table_arithmetic(rule, layout.prior_col, current_typed_values)
@@ -2332,6 +2667,29 @@ def _write_inline_arithmetic_check(
         prior_diff = _calculate_arithmetic_diff(table.statement_type, layout, rule, "prior", current_values, primary_values, primary_layouts)
         current_issue = _has_check_difference(current_diff)
         prior_issue = _has_check_difference(prior_diff)
+    formula_text = _rule_formula_text(rule)
+    period_options = {}
+    for period, result in (("current", current_result), ("prior", prior_result)):
+        period_label = "kỳ này" if period == "current" else "kỳ trước"
+        review_codes = result.review_codes if result is not None else ()
+        compact_formula = _rule_formula_text(rule, compact=True)
+        period_options[period] = {
+            "check_label": f"Kiểm tra số học {formula_text}",
+            "short_check": compact_formula,
+            "review_message": (
+                f"Kiểm tra số học {formula_text} (cần xem xét): không tính được {period_label} "
+                f"vì mã {', '.join(review_codes)} thiếu hoặc không phải số."
+                if review_codes
+                else ""
+            ),
+            "review_detail": FindingDetail(
+                check=compact_formula,
+                note=f"Không tính được: mã {', '.join(review_codes)} thiếu hoặc không phải số",
+                period=period_label,
+            )
+            if review_codes
+            else None,
+        }
     _add_pair_issue_highlight(
         worksheet,
         target_row,
@@ -2341,6 +2699,8 @@ def _write_inline_arithmetic_check(
         prior_issue,
         current_diff,
         prior_diff,
+        current_options=period_options["current"],
+        prior_options=period_options["prior"],
     )
     _write_inline_note(
         worksheet,
@@ -2358,7 +2718,7 @@ def _write_inline_sign_check(
     code_rows: dict[str, int],
     rule: SignRule,
     layout: TableLayout,
-    current_values: dict[str, dict[int, float]],
+    current_values: dict[str, dict[int, Decimal]],
     check_start_col: int,
     slot_by_row: dict[int, int],
     formula_cells: list[str],
@@ -2390,6 +2750,14 @@ def _write_inline_sign_check(
         _has_check_difference(prior_diff),
         current_diff,
         prior_diff,
+        current_options={
+            "message": _sign_rule_message(rule, current_diff, "kỳ này"),
+            "detail": _sign_rule_detail(rule, current_diff, "kỳ này"),
+        },
+        prior_options={
+            "message": _sign_rule_message(rule, prior_diff, "kỳ trước"),
+            "detail": _sign_rule_detail(rule, prior_diff, "kỳ trước"),
+        },
     )
     _write_inline_note(worksheet, row, slot, rule.note, [])
 
@@ -2402,7 +2770,7 @@ def _write_inline_cross_period_check(
     primary_sheets: dict[StatementType, str],
     primary_layouts: dict[StatementType, TableLayout],
     primary_code_rows: dict[StatementType, dict[str, int]],
-    primary_values: dict[StatementType, dict[str, dict[int, float]]],
+    primary_values: dict[StatementType, dict[str, dict[int, Decimal]]],
     rule: CrossPeriodRule,
     check_start_col: int,
     slot_by_row: dict[int, int],
@@ -2410,6 +2778,11 @@ def _write_inline_cross_period_check(
 ) -> None:
     target_row = code_rows.get(_normalize_code(rule.target_code))
     if target_row is None:
+        return
+    if rule.target_period == "prior" and layout.current_col == layout.prior_col:
+        return
+    source_layout = primary_layouts.get(rule.source)
+    if rule.source_period == "prior" and source_layout and source_layout.current_col == source_layout.prior_col:
         return
     target_col = _period_col(table.statement_type, table.statement_type, rule.target_period, layout, primary_layouts)
     source_col = _period_col(table.statement_type, rule.source, rule.source_period, layout, primary_layouts)
@@ -2420,22 +2793,85 @@ def _write_inline_cross_period_check(
     missing = [] if source_ref is not None else [rule.source_code]
     formula = _excel_check_formula(f"{target_ref}-{source_ref or 0}")
     slot = _reserve_check_slot(worksheet, target_row, check_start_col, layout, slot_by_row)
-    check_col = slot if target_col == 4 else slot + 1
+    check_col = slot if target_col == layout.current_col else slot + 1
     diff_cell = worksheet.cell(row=target_row, column=check_col, value=formula)
     diff_cell.number_format = CHECK_DIFFERENCE_NUMBER_FORMAT
     diff_cell.border = THIN_BORDER
     formula_cells.append(diff_cell.coordinate)
     value_col = target_col
     direct_diff = _calculate_cross_period_diff(table.statement_type, rule, primary_values, primary_layouts)
+    source_value = _lookup_value(primary_values, rule.source, rule.source_code, source_col)
     _add_single_issue_highlight(
         worksheet,
         target_row,
         value_col,
         check_col,
-        _has_check_difference(direct_diff),
+        _has_check_difference(direct_diff) and source_ref is not None,
         direct_diff,
+        message=_cross_period_rule_message(rule, direct_diff, source_value, review_only=rule.review_only),
+        review_only=rule.review_only,
+        detail=FindingDetail(
+            check=f"Liên kỳ {rule.target_code} – {rule.source_code}",
+            note=rule.note,
+            first_label=f"{rule.target_code} {_PERIOD_LABELS.get(rule.target_period, rule.target_period)}",
+            first_value=source_value + direct_diff,
+            second_label=(
+                f"{rule.source_code} {_PERIOD_LABELS.get(rule.source_period, rule.source_period)}"
+            ),
+            second_value=source_value,
+            difference=direct_diff,
+        ),
     )
     _write_inline_note(worksheet, target_row, slot, rule.note, missing)
+
+
+_PERIOD_LABELS = {"current": "kỳ này", "prior": "kỳ trước"}
+_SHORT_STATEMENT_LABELS = {
+    StatementType.BALANCE_SHEET_ASSETS: "BS",
+    StatementType.BALANCE_SHEET_EQUITY: "BS",
+    StatementType.INCOME_STATEMENT: "PL",
+    StatementType.CASH_FLOW: "CF",
+}
+
+
+def _short_statement_label(statement_type: StatementType) -> str:
+    return _SHORT_STATEMENT_LABELS.get(statement_type, statement_type.value)
+
+
+def _sign_rule_message(rule: SignRule, value: Decimal, period_label: str) -> str:
+    expected = "số dương" if rule.expected == "positive" else "số âm (trình bày trong ngoặc)"
+    return (
+        f"Kiểm tra dấu: mã {rule.code} {period_label} phải là {expected}, "
+        f"đang trình bày {_format_amount(value)}."
+    )
+
+
+def _sign_rule_detail(rule: SignRule, value: Decimal, period_label: str) -> FindingDetail:
+    expected = "số dương" if rule.expected == "positive" else "số âm"
+    return FindingDetail(
+        check=f"Dấu mã {rule.code}",
+        note=f"Phải là {expected}",
+        period=period_label,
+        first_label="Trình bày",
+        first_value=value,
+    )
+
+
+def _cross_period_rule_message(
+    rule: CrossPeriodRule,
+    difference: Decimal,
+    source_value: Decimal,
+    *,
+    review_only: bool,
+) -> str:
+    target_value = source_value + difference
+    label = "Kiểm tra liên kỳ (cần xem xét)" if review_only else "Kiểm tra liên kỳ"
+    return (
+        f"{label}: mã {rule.target_code} {_PERIOD_LABELS.get(rule.target_period, rule.target_period)} "
+        f"{_format_amount(target_value)} khác mã {rule.source_code} "
+        f"{_PERIOD_LABELS.get(rule.source_period, rule.source_period)} trên {_short_statement_label(rule.source)} "
+        f"{_format_amount(source_value)}; chênh lệch {_format_amount(difference)}. {rule.note}."
+    )
 
 
 def _write_inline_check_headers(
@@ -2447,11 +2883,14 @@ def _write_inline_check_headers(
     base_col = check_start_col + slot_index * 3
     current_letter = get_column_letter(layout.current_col)
     prior_letter = get_column_letter(layout.prior_col)
-    headers = (f"Kiểm tra cột {current_letter}", f"Kiểm tra cột {prior_letter}", "Ghi chú")
+    is_single = (layout.current_col == layout.prior_col)
+    prior_hdr = "N/A (1 kỳ)" if is_single else f"Kiểm tra cột {prior_letter}"
+    headers = (f"Kiểm tra cột {current_letter}", prior_hdr, "Ghi chú")
     if slot_index:
+        prior_slot_hdr = "N/A (1 kỳ)" if is_single else f"Kiểm tra {prior_letter} ({slot_index + 1})"
         headers = (
             f"Kiểm tra {current_letter} ({slot_index + 1})",
-            f"Kiểm tra {prior_letter} ({slot_index + 1})",
+            prior_slot_hdr,
             f"Ghi chú ({slot_index + 1})",
         )
     for offset, header in enumerate(headers):
@@ -2501,6 +2940,42 @@ def _write_inline_note(
     note_cell.border = THIN_BORDER
 
 
+COMPACT_FORMULA_MAX_TERMS = 4
+
+
+def _rule_formula_text(rule: ArithmeticRule, *, compact: bool = False) -> str:
+    """Diễn đạt rule theo mã chỉ tiêu, ví dụ ``mã 270 = 100 + 200``.
+
+    ``compact`` rút gọn rule nhiều thành phần cùng dấu thành ``Mã 20 = 8 + … + 17 (10 mã)``.
+    """
+    if (
+        compact
+        and len(rule.terms) > COMPACT_FORMULA_MAX_TERMS
+        and all(term.coefficient == 1 and term.source is None for term in rule.terms)
+    ):
+        return (
+            f"Mã {rule.target_code} = {rule.terms[0].code} + … + "
+            f"{rule.terms[-1].code} ({len(rule.terms)} mã)"
+        )
+    if compact:
+        return "M" + _rule_formula_text(rule)[1:]
+    parts: list[str] = []
+    for term in rule.terms:
+        source = f" ({_short_statement_label(term.source)})" if term.source is not None else ""
+        if term.coefficient == 1:
+            sign, magnitude = "+", ""
+        elif term.coefficient == -1:
+            sign, magnitude = "−", ""
+        else:
+            sign = "−" if term.coefficient < 0 else "+"
+            magnitude = f"{abs(term.coefficient)}×"
+        parts.append(f"{sign} {magnitude}{term.code}{source}")
+    expression = " ".join(parts).removeprefix("+ ").strip()
+    if expression.startswith("− "):
+        expression = "−" + expression[2:]
+    return f"mã {rule.target_code} = {expression}"
+
+
 def _rule_description(rule: ArithmeticRule) -> str:
     if rule.note != "Khác số chi tiết":
         return rule.note
@@ -2515,14 +2990,8 @@ def _nearest_statement_tables(
     tables: list[ExtractedTable],
     current_table: ExtractedTable,
 ) -> dict[StatementType, ExtractedTable]:
-    statement_types = {
-        StatementType.BALANCE_SHEET_ASSETS,
-        StatementType.BALANCE_SHEET_EQUITY,
-        StatementType.INCOME_STATEMENT,
-        StatementType.CASH_FLOW,
-    }
     peers: dict[StatementType, ExtractedTable] = {}
-    for statement_type in statement_types:
+    for statement_type in PRIMARY_STATEMENT_TYPES:
         candidates = [table for table in tables if table.statement_type == statement_type]
         if not candidates:
             continue
@@ -2556,8 +3025,8 @@ def _primary_code_row_lookup(tables: list[ExtractedTable]) -> dict[StatementType
     return lookup
 
 
-def _primary_value_lookup(tables: list[ExtractedTable]) -> dict[StatementType, dict[str, dict[int, float]]]:
-    lookup: dict[StatementType, dict[str, dict[int, float]]] = {}
+def _primary_value_lookup(tables: list[ExtractedTable]) -> dict[StatementType, dict[str, dict[int, Decimal]]]:
+    lookup: dict[StatementType, dict[str, dict[int, Decimal]]] = {}
     for table in tables:
         if table.statement_type in lookup:
             continue
@@ -2649,6 +3118,84 @@ def _vertical_sum_range(table: ExtractedTable, target_row_idx: int, col_idx: int
     if numeric_count < minimum_numeric_count:
         return None
     return start_idx, end_idx
+
+
+ROW_LABEL_MAX_LENGTH = 60
+_DEDUCTION_HEADER_PATTERN = re.compile(r"^tru(?:\s*:|\s|$)")
+
+
+def _row_label(table: ExtractedTable, row_idx: int) -> str:
+    """Nhãn dòng để kiểm toán viên định vị trên Word mà không cần mở Excel."""
+    row = table.rows[row_idx] if 0 <= row_idx < len(table.rows) else []
+    label = next(
+        (
+            clean_text(value)
+            for value in row[:2]
+            if clean_text(value) and parse_accounting_number(value) is None
+        ),
+        f"dòng {row_idx + 1}",
+    )
+    if len(label) > ROW_LABEL_MAX_LENGTH:
+        return label[: ROW_LABEL_MAX_LENGTH - 1].rstrip() + "…"
+    return label
+
+
+def _deduction_header_in_range(table: ExtractedTable, start_row: int, end_row: int) -> int | None:
+    """Tìm dòng tiêu đề ``Trừ:`` chia vùng cộng thành phần gốc và phần giảm trừ.
+
+    Chỉ nhận diện khi có đúng một dòng ``Trừ`` không mang số liệu và có số liệu ở cả
+    hai phía; trường hợp khác giữ phép cộng thông thường.
+    """
+    headers = [
+        row_idx
+        for row_idx in range(start_row + 1, end_row + 1)
+        if _DEDUCTION_HEADER_PATTERN.match(normalized_key(_cell_value(table.rows[row_idx], 0)))
+        and not any(parse_accounting_number(value) is not None for value in table.rows[row_idx])
+    ]
+    if len(headers) != 1:
+        return None
+    header = headers[0]
+    has_base_values = any(
+        _is_vertical_numeric_value(value)
+        for row in table.rows[start_row:header]
+        for value in row[1:]
+    )
+    has_deduction_values = any(
+        _is_vertical_numeric_value(value)
+        for row in table.rows[header + 1 : end_row + 1]
+        for value in row[1:]
+    )
+    return header if has_base_values and has_deduction_values else None
+
+
+def _deduction_is_subtracted(
+    table: ExtractedTable,
+    start_row: int,
+    deduction_header: int,
+    end_row: int,
+    col_idx: int,
+) -> bool:
+    """Xác định phần dưới dòng ``Trừ:`` được trừ đi hay đã mang dấu âm sẵn.
+
+    Khi phần giảm trừ trình bày ngược dấu với phần gốc (ví dụ dự phòng trong ngoặc),
+    số liệu đã mang dấu nên dòng tổng là phép cộng thông thường. Khi cùng dấu (ví dụ
+    nợ dài hạn đến hạn trả, hoặc cột biến động cùng âm), dòng tổng = gốc − giảm trừ.
+    """
+
+    def column_total(first_row: int, last_row: int) -> Decimal:
+        return sum(
+            (
+                number
+                for row in table.rows[first_row : last_row + 1]
+                if col_idx < len(row)
+                and (number := parse_accounting_number(row[col_idx])) is not None
+            ),
+            Decimal(0),
+        )
+
+    base_total = column_total(start_row, deduction_header - 1)
+    deduction_total = column_total(deduction_header + 1, end_row)
+    return base_total * deduction_total >= 0
 
 
 def _is_vertical_numeric_value(value: object) -> bool:
@@ -2956,13 +3503,11 @@ def _write_summary(
         "Sheet chi tiết",
         "Nội dung bảng",
         "Loại bảng",
-        "Dòng",
-        "Cột",
-        "Số phép kiểm tra",
-        "Tổng sai sót",
         "Trạng thái",
+        "Tổng sai sót",
         "Trạng thái đối chiếu BCTC",
         "Ghi chú",
+        "Số phép kiểm tra",
     ]
     for col_idx, header in enumerate(headers, start=1):
         cell = summary.cell(row=1, column=col_idx, value=header)
@@ -2980,25 +3525,27 @@ def _write_summary(
             sheet_name,
             table_content_label(table),
             table_type_label(table),
-            table.row_count,
-            table.column_count,
-            result.check_count,
-            result.issue_count,
             result.status,
+            result.issue_count,
             _note_reconciliation_summary_status(
                 table,
                 note_matches_by_table.get(table.index, []),
                 maturity_split_parent=table.index in maturity_parent_indexes,
             ),
             result.note,
+            result.check_count,
         ]
         for col_idx, value in enumerate(values, start=1):
             cell = summary.cell(row=row_idx, column=col_idx, value=value)
             cell.border = THIN_BORDER
+            if col_idx in (1, 2, 5, 6, 7, 9):
+                cell.alignment = Alignment(horizontal="center", vertical="center")
+            else:
+                cell.alignment = Alignment(vertical="center")
             if col_idx == 2:
                 cell.hyperlink = f"#{sheet_name}!A1"
                 cell.style = "Hyperlink"
-        status_cell = summary.cell(row=row_idx, column=9)
+        status_cell = summary.cell(row=row_idx, column=5)
         status_cell.fill = (
             TABLE_STATUS_FILLS["Cần xem xét"]
             if result.status == "Cần xem xét"
@@ -3006,20 +3553,20 @@ def _write_summary(
             if result.issue_count
             else TABLE_STATUS_FILLS.get(result.status, CHECK_VALUE_FILL)
         )
-        reconciliation_status_cell = summary.cell(row=row_idx, column=10)
+        if result.issue_count:
+            summary.cell(row=row_idx, column=6).fill = WARNING_FILL
+        else:
+            summary.cell(row=row_idx, column=6).fill = CHECK_VALUE_FILL
+        reconciliation_status_cell = summary.cell(row=row_idx, column=7)
         reconciliation_status_cell.fill = _note_reconciliation_summary_fill(
             reconciliation_status_cell.value
         )
-        if result.issue_count:
-            summary.cell(row=row_idx, column=8).fill = WARNING_FILL
-        else:
-            summary.cell(row=row_idx, column=8).fill = CHECK_VALUE_FILL
 
-    widths = [12, 18, 48, 38, 10, 10, 18, 14, 16, 28, 70]
+    widths = [12, 18, 48, 32, 16, 14, 26, 60, 18]
     for col_idx, width in enumerate(widths, start=1):
         summary.column_dimensions[get_column_letter(col_idx)].width = width
     summary.freeze_panes = "A2"
-    summary.auto_filter.ref = f"A1:K{max(1, summary.max_row)}"
+    summary.auto_filter.ref = f"A1:I{max(1, summary.max_row)}"
     summary["M1"] = "Bộ rule nghiệp vụ"
     summary["M1"].font = Font(bold=True, color=COLOR_WHITE)
     summary["M1"].fill = TITLE_FILL

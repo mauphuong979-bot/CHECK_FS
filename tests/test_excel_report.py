@@ -126,8 +126,8 @@ class ExcelReportTest(unittest.TestCase):
         )
         workbook = load_workbook(BytesIO(workbook_bytes), data_only=False)
 
-        self.assertEqual(workbook["00_Tong_hop"]["J3"].value, "Không áp dụng")
-        self.assertEqual(workbook["00_Tong_hop"]["J4"].value, "Khớp")
+        self.assertEqual(workbook["00_Tong_hop"]["G3"].value, "Không áp dụng")
+        self.assertEqual(workbook["00_Tong_hop"]["G4"].value, "Khớp")
         self.assertIn(
             "Không áp dụng đối chiếu trực tiếp; số liệu được đối chiếu theo bảng phân loại ngắn hạn/dài hạn bên dưới.",
             [cell.value for row in workbook["T002_TM"] for cell in row],
@@ -777,7 +777,7 @@ class ExcelReportTest(unittest.TestCase):
 
         workbook = load_workbook(BytesIO(build_audit_workbook([statement, note])), data_only=False)
         self.assertNotIn("01_Doi_chieu_TM", workbook.sheetnames)
-        self.assertEqual(workbook["00_Tong_hop"]["J3"].value, "Khớp")
+        self.assertEqual(workbook["00_Tong_hop"]["G3"].value, "Khớp")
 
     def test_narrative_loan_contract_table_is_marked_not_checked(self):
         table = ExtractedTable(
@@ -797,8 +797,8 @@ class ExcelReportTest(unittest.TestCase):
 
         workbook = load_workbook(BytesIO(build_audit_workbook([table])), data_only=False)
 
-        self.assertEqual(workbook["00_Tong_hop"]["I2"].value, "Không kiểm tra")
-        self.assertIn("không có cấu trúc tổng", workbook["00_Tong_hop"]["K2"].value)
+        self.assertEqual(workbook["00_Tong_hop"]["E2"].value, "Không kiểm tra")
+        self.assertIn("không có cấu trúc tổng", workbook["00_Tong_hop"]["H2"].value)
         self.assertEqual(workbook["T001_TM"]["A2"].value, "Tiếp →")
 
     def test_related_party_relationship_table_is_marked_not_checked(self):
@@ -823,7 +823,7 @@ class ExcelReportTest(unittest.TestCase):
             workbook["00_Tong_hop"]["D2"].value,
             "Giao dịch với các bên liên quan",
         )
-        self.assertEqual(workbook["00_Tong_hop"]["I2"].value, "Không kiểm tra")
+        self.assertEqual(workbook["00_Tong_hop"]["E2"].value, "Không kiểm tra")
         self.assertFalse(comment_targets)
         self.assertIn(
             "Không áp dụng đối chiếu BCTC cho bảng này.",
@@ -847,7 +847,7 @@ class ExcelReportTest(unittest.TestCase):
         workbook_bytes, comment_targets = build_audit_workbook_with_comment_targets([table])
         workbook = load_workbook(BytesIO(workbook_bytes), data_only=False)
 
-        self.assertEqual(workbook["00_Tong_hop"]["J2"].value, "Không áp dụng")
+        self.assertEqual(workbook["00_Tong_hop"]["G2"].value, "Không áp dụng")
         self.assertFalse(comment_targets)
         self.assertIn(
             "Không áp dụng đối chiếu BCTC cho bảng này.",
@@ -892,7 +892,7 @@ class ExcelReportTest(unittest.TestCase):
         for row in (2, 3):
             self.assertEqual(workbook["00_Tong_hop"].cell(row, 3).value, "Bên liên quan")
             self.assertEqual(workbook["00_Tong_hop"].cell(row, 4).value, "Thuyết minh")
-            self.assertEqual(workbook["00_Tong_hop"].cell(row, 9).value, "Không kiểm tra")
+            self.assertEqual(workbook["00_Tong_hop"].cell(row, 5).value, "Không kiểm tra")
         self.assertFalse(comment_targets)
         for sheet_name in ("T001_TM", "T002_TM"):
             self.assertIn(
@@ -910,7 +910,7 @@ class ExcelReportTest(unittest.TestCase):
 
         workbook = load_workbook(BytesIO(build_audit_workbook([table])), data_only=False)
 
-        self.assertEqual(workbook["00_Tong_hop"]["I2"].value, "Cần xem xét")
+        self.assertEqual(workbook["00_Tong_hop"]["E2"].value, "Cần xem xét")
 
     def test_unknown_qualitative_table_is_not_checked_or_commented(self):
         table = ExtractedTable(
@@ -923,7 +923,7 @@ class ExcelReportTest(unittest.TestCase):
         workbook_bytes, comment_targets = build_audit_workbook_with_comment_targets([table])
         workbook = load_workbook(BytesIO(workbook_bytes), data_only=False)
 
-        self.assertEqual(workbook["00_Tong_hop"]["I2"].value, "Không kiểm tra")
+        self.assertEqual(workbook["00_Tong_hop"]["E2"].value, "Không kiểm tra")
         self.assertFalse(comment_targets)
 
     def test_unknown_table_with_accounting_values_still_requires_review(self):
@@ -937,7 +937,7 @@ class ExcelReportTest(unittest.TestCase):
         workbook_bytes, comment_targets = build_audit_workbook_with_comment_targets([table])
         workbook = load_workbook(BytesIO(workbook_bytes), data_only=False)
 
-        self.assertEqual(workbook["00_Tong_hop"]["I2"].value, "Cần xem xét")
+        self.assertEqual(workbook["00_Tong_hop"]["E2"].value, "Cần xem xét")
         self.assertFalse(comment_targets)
 
     def test_noise_tables_from_word_do_not_create_manual_review_comments(self):
@@ -968,8 +968,8 @@ class ExcelReportTest(unittest.TestCase):
         workbook_bytes, comment_targets = build_audit_workbook_with_comment_targets(tables)
         workbook = load_workbook(BytesIO(workbook_bytes), data_only=False)
 
-        self.assertEqual(workbook["00_Tong_hop"]["I2"].value, "Không kiểm tra")
-        self.assertEqual(workbook["00_Tong_hop"]["I3"].value, "Không kiểm tra")
+        self.assertEqual(workbook["00_Tong_hop"]["E2"].value, "Không kiểm tra")
+        self.assertEqual(workbook["00_Tong_hop"]["E3"].value, "Không kiểm tra")
         self.assertFalse(
             any(
                 target.message == "Kiểm tra số học: Cần xem xét thủ công."
@@ -1017,10 +1017,10 @@ class ExcelReportTest(unittest.TestCase):
             with self.subTest(table=table.index):
                 workbook_bytes, comment_targets = build_audit_workbook_with_comment_targets([table])
                 workbook = load_workbook(BytesIO(workbook_bytes), data_only=False)
-                self.assertEqual(workbook["00_Tong_hop"]["I2"].value, "Không kiểm tra")
+                self.assertEqual(workbook["00_Tong_hop"]["E2"].value, "Không kiểm tra")
                 if table.index == 3:
                     self.assertEqual(
-                        workbook["00_Tong_hop"]["J2"].value,
+                        workbook["00_Tong_hop"]["G2"].value,
                         "Không áp dụng",
                     )
                     self.assertIn(
@@ -1084,7 +1084,7 @@ class ExcelReportTest(unittest.TestCase):
         workbook = load_workbook(BytesIO(workbook_bytes), data_only=False)
 
         self.assertTrue(
-            all(workbook["00_Tong_hop"].cell(row, 9).value == "Không kiểm tra" for row in range(2, 5))
+            all(workbook["00_Tong_hop"].cell(row, 5).value == "Không kiểm tra" for row in range(2, 5))
         )
         self.assertFalse(comment_targets)
         self.assertFalse(
@@ -1120,7 +1120,8 @@ class ExcelReportTest(unittest.TestCase):
         self.assertIn("=ROUND(F8-SUM(F7:F7),2)", values)
         self.assertIn("=ROUND(H8-SUM(H7:H7),2)", values)
         self.assertIn(
-            "Kiểm tra số học: chênh lệch 1.000.000.",
+            "Kiểm tra cộng dọc: số trình bày 36.500.000; số tính lại "
+            "(dòng “Thrive Nation Group Limited”) 35.500.000; chênh lệch 1.000.000.",
             {target.message for target in comment_targets},
         )
 
@@ -1297,9 +1298,9 @@ class ExcelReportTest(unittest.TestCase):
         self.assertIn("Cần xác minh dữ liệu", worksheet["G7"].value)
         self.assertIn("kỳ này: mã 2", worksheet["G7"].value)
         self.assertTrue(worksheet["C7"].fill.fgColor.rgb.endswith("FFF2CC"))
-        self.assertEqual(workbook["00_Tong_hop"]["I2"].value, "Cần xem xét")
-        self.assertIn("dữ liệu thiếu hoặc không hợp lệ", workbook["00_Tong_hop"]["K2"].value)
-        self.assertTrue(workbook["00_Tong_hop"]["I2"].fill.fgColor.rgb.endswith("FFF2CC"))
+        self.assertEqual(workbook["00_Tong_hop"]["E2"].value, "Cần xem xét")
+        self.assertIn("dữ liệu thiếu hoặc không hợp lệ", workbook["00_Tong_hop"]["H2"].value)
+        self.assertTrue(workbook["00_Tong_hop"]["E2"].fill.fgColor.rgb.endswith("FFF2CC"))
 
     def test_missing_target_comments_only_actionable_component_values(self):
         table = ExtractedTable(
@@ -1315,21 +1316,20 @@ class ExcelReportTest(unittest.TestCase):
         workbook = load_workbook(BytesIO(build_audit_workbook([table])), data_only=False)
         worksheet = workbook["T001_PL"]
 
+        # Một comment cần xem xét cho cả rule thiếu mã đích; ô thành phần khác chỉ tô màu.
         self.assertIsNotNone(worksheet["C5"].comment)
-        self.assertIn("thiếu mã đích 10", worksheet["C5"].comment.text)
+        self.assertIn("không có dòng mã 10", worksheet["C5"].comment.text)
+        self.assertIn("mã 10 = 1 − 2", worksheet["C5"].comment.text)
         self.assertIsNone(worksheet["D5"].comment)
         self.assertIsNone(worksheet["C6"].comment)
-        self.assertIsNotNone(worksheet["D6"].comment)
-        self.assertEqual(workbook["00_Tong_hop"]["I2"].value, "Cần xem xét")
+        self.assertIsNone(worksheet["D6"].comment)
+        self.assertTrue(worksheet["D6"].fill.fgColor.rgb.endswith("FFF2CC"))
+        self.assertEqual(workbook["00_Tong_hop"]["E2"].value, "Cần xem xét")
 
         _, comment_targets = build_audit_workbook_with_comment_targets([table])
-        target_locations = {
-            (target.row_index, target.column_index): target.message
-            for target in comment_targets
-        }
-        self.assertEqual(set(target_locations), {(1, 2), (2, 3)})
-        self.assertTrue(
-            all("thiếu mã đích 10" in message for message in target_locations.values())
+        self.assertEqual(
+            [(target.row_index, target.column_index, target.category) for target in comment_targets],
+            [(1, 2, WordCommentCategory.REVIEW)],
         )
 
     def test_note_sheet_contains_its_reconciliation_results(self):
@@ -1374,7 +1374,7 @@ class ExcelReportTest(unittest.TestCase):
         self.assertEqual(worksheet.cell(bctc_row, 2).hyperlink.target, "#T001_BS_TS!D5")
 
         self.assertNotIn("01_Doi_chieu_TM", workbook.sheetnames)
-        self.assertEqual(workbook["00_Tong_hop"]["J3"].value, "Khớp")
+        self.assertEqual(workbook["00_Tong_hop"]["G3"].value, "Khớp")
         self.assertFalse(
             any(
                 cell.hyperlink and cell.hyperlink.target == "#01_Doi_chieu_TM!A3"
@@ -1672,6 +1672,35 @@ class ExcelReportTest(unittest.TestCase):
                 self.assertEqual(target.category, WordCommentCategory.REVIEW)
             # The tab should be YELLOW (00FFC000), NOT RED (00C00000)
             self.assertEqual(workbook["T001_BS_NV"].sheet_properties.tabColor.rgb, "00FFC000")
+
+    def test_summary_headers_and_actionable_column_order(self):
+        table = ExtractedTable(
+            1,
+            [
+                ["Chỉ tiêu", "Mã số", "Năm nay", "Năm trước"],
+                ["Tài sản", "100", "100", "100"],
+            ],
+            StatementType.BALANCE_SHEET_ASSETS,
+            title_hint="Bảng cân đối kế toán",
+        )
+        workbook = load_workbook(BytesIO(build_audit_workbook([table])), data_only=False)
+        summary = workbook["00_Tong_hop"]
+        headers = [summary.cell(row=1, column=c).value for c in range(1, 10)]
+        expected_headers = [
+            "STT bảng",
+            "Sheet chi tiết",
+            "Nội dung bảng",
+            "Loại bảng",
+            "Trạng thái",
+            "Tổng sai sót",
+            "Trạng thái đối chiếu BCTC",
+            "Ghi chú",
+            "Số phép kiểm tra",
+        ]
+        self.assertEqual(headers, expected_headers)
+        self.assertNotIn("Dòng", headers)
+        self.assertNotIn("Cột", headers)
+        self.assertTrue(summary.auto_filter.ref.startswith("A1:I"))
 
 
 if __name__ == "__main__":
