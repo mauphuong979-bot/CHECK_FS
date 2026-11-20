@@ -157,8 +157,10 @@ Không tìm thấy migration, template giao diện, static assets, Dockerfile, c
 ```text
 app.py
 → src.ui.streamlit_app.main()
+→ auth_gate.open_entry_overlay(): lớp phủ "Đang kiểm tra đăng nhập…" (CSS tự chứa) là phần tử đầu tiên, giữ nguyên qua
+  mọi lượt chạy đến khi form đăng nhập hoặc toàn bộ trang chính vẽ xong (tự ẩn sau 15 giây)
 → _apply_styles() nạp src/ui/styles.css
-→ src.ui.auth_gate.require_login(): đọc [auth] trong Secrets, tạo UserDirectory (Google Sheet hoặc Secrets),
+→ src.ui.auth_gate.require_login(overlay): đọc [auth] trong Secrets, tạo UserDirectory (Google Sheet hoặc Secrets),
   thử ghi nhớ đăng nhập (cookie hoặc cầu nối ô nhập ẩn), nếu chưa đăng nhập thì vẽ màn hình đăng nhập và st.stop()
 → _render_top_bar(): tiêu đề, 🌐 Đối chiếu số với bản dịch, ❓ Hướng dẫn, 👤 menu tài khoản
 → tab 🔍 Kiểm tra BCTC (và ⚙️ Quản trị nếu là Quản trị viên)
@@ -624,7 +626,7 @@ Quy tắc áp dụng:
 | Rule và hằng số layout | Nội bộ | Công thức nghiệp vụ, vị trí dòng/cột, style Excel | `src/domain/audit_rules.py`, `src/reporting/excel_report.py` |
 | `[auth]` trong Secrets | Có | `cookie_secret` (≥16 ký tự, bật ghi nhớ đăng nhập), `remember_days`, `[auth.users.<tên>]` (`password`, `role`) | `src/auth/settings.py` |
 | `[connections.gsheets]` trong Secrets | Không (khuyến nghị) | Khóa service account + `spreadsheet` URL; bật lưu tài khoản/đổi mật khẩu/nhật ký | `src/auth/gsheet.py` |
-| `.streamlit/config.toml` | Có | Theme, ẩn chi tiết lỗi, tắt thống kê sử dụng | Streamlit |
+| `.streamlit/config.toml` | Có | Theme, ẩn chi tiết lỗi, tắt thống kê sử dụng, `ui.hideTopBar = true` (ẩn Share/GitHub/Deploy ngay từ lần tải đầu, trước khi CSS của app có hiệu lực), `client.showSidebarNavigation = false` | Streamlit |
 
 Biến môi trường ứng dụng: không có. `.streamlit/secrets.toml` bị `.gitignore`; trên Streamlit Cloud dán nội dung vào App settings → Secrets. Không có giá trị bí mật thực tế được ghi trong tài liệu này.
 
@@ -783,6 +785,8 @@ Trên Linux/Streamlit Cloud, lệnh kích hoạt tương ứng không được r
 ```powershell
 streamlit run app.py
 ```
+
+Trên Windows cục bộ có thể mở nhanh bằng cách nhấp đúp `START_APP.bat` ở thư mục gốc: script chuyển về thư mục chứa nó, ưu tiên `.venv\Scripts\python.exe` (sau đó `venv`, `python`, `py` trong PATH), kiểm tra đã cài Streamlit rồi chạy `python -m streamlit run app.py`. File này chỉ phục vụ máy cục bộ, không dùng trên Streamlit Cloud.
 
 ### Chạy test
 

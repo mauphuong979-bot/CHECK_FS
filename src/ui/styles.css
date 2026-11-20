@@ -327,39 +327,7 @@ a[href*="github.com"],
     .st-key-login_box { margin-top: 4vh; }
 }
 
-/* Màn hình chờ trong lúc kiểm tra ghi nhớ đăng nhập */
-.auth-wait {
-    position: fixed;
-    inset: 0;
-    z-index: 999990;
-    background: #FFFFFF;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    gap: 14px;
-    color: var(--app-muted);
-    font-size: 15px;
-}
-
-.auth-wait-spinner {
-    width: 38px;
-    height: 38px;
-    border-radius: 50%;
-    border: 4px solid #E6E6E6;
-    border-top-color: var(--app-navy);
-    animation: auth-rotate 0.8s linear infinite;
-}
-
-.auth-wait-fallback {
-    font-size: 0.85rem;
-    visibility: hidden;
-    animation: auth-reveal 0s 8s forwards;
-}
-
-@keyframes auth-rotate { to { transform: rotate(360deg); } }
-@keyframes auth-reveal { to { visibility: visible; } }
-
+/* Ô nhập ẩn của cầu nối ghi nhớ đăng nhập (lớp phủ chờ tự chứa CSS trong auth_gate.py) */
 .st-key-checkfs_remember_bridge_box {
     position: absolute;
     left: -10000px;

@@ -20,6 +20,27 @@ _AUTH_USER = "auth_user"
 _AUTH_TOKEN_VERSION = "auth_token_version"
 _PENDING_COOKIE_SCRIPT = "auth_cookie_script"
 _PENDING_NOTICE = "auth_notice"
+_COVER_MAIN_PAGE = "auth_cover_main_page"
+_LOGIN_FORM_SHOWN = "auth_login_form_shown"
+ENTRY_OVERLAY_GIVE_UP_SECONDS = 15
+ENTRY_OVERLAY_HTML = f"""<style>
+.auth-wait {{ position: fixed; inset: 0; z-index: 999990; background: #FFFFFF; display: flex;
+    flex-direction: column; align-items: center; justify-content: center; gap: 14px;
+    font-family: "Inter", "Segoe UI", sans-serif; color: #61758A; font-size: 15px;
+    animation: auth-give-up 0s {ENTRY_OVERLAY_GIVE_UP_SECONDS}s forwards; }}
+.auth-wait-spinner {{ width: 38px; height: 38px; border-radius: 50%; border: 4px solid #E6E6E6;
+    border-top-color: #1F4E78; animation: auth-rotate 0.8s linear infinite; }}
+.auth-wait-fallback {{ font-size: 0.85rem; visibility: hidden; animation: auth-reveal 0s 8s forwards; }}
+@keyframes auth-rotate {{ to {{ transform: rotate(360deg); }} }}
+@keyframes auth-reveal {{ to {{ visibility: visible; }} }}
+@keyframes auth-give-up {{ to {{ visibility: hidden; }} }}
+</style>
+<div class="auth-wait">
+    <div class="auth-wait-spinner"></div>
+    <div>Đang kiểm tra đăng nhập…</div>
+    <div class="auth-wait-fallback">Chưa tự đăng nhập được.
+        <a href="?login=password" target="_self">Đăng nhập bằng mật khẩu</a></div>
+</div>"""
 _SESSION_DATA_KEYS_TO_CLEAR_ON_SIGN_OUT = (
     "tables",
     "workbook_bytes",
@@ -33,7 +54,26 @@ _SESSION_DATA_KEYS_TO_CLEAR_ON_SIGN_OUT = (
 )
 
 
-def require_login() -> tuple[UserAccount, UserDirectory]:
+def open_entry_overlay():
+    """Lớp phủ "Đang kiểm tra đăng nhập…"; phải là phần tử đầu tiên của trang.
+
+    Được vẽ cùng nội dung, cùng vị trí ở mọi lượt chạy cho đến khi form đăng nhập hoặc toàn bộ trang chính
+    đã vẽ xong, nên trình duyệt giữ nguyên một màn hình chờ thay vì để lộ trang đang dựng dở giữa các lần
+    chạy lại. Lớp phủ tự ẩn sau ``ENTRY_OVERLAY_GIVE_UP_SECONDS`` giây để không che lỗi bất ngờ.
+    """
+    state = st.session_state
+    if state.get(_COVER_MAIN_PAGE) or (not state.get(_AUTH_USER) and not state.get(_LOGIN_FORM_SHOWN)):
+        return st.html(ENTRY_OVERLAY_HTML)
+    return st.empty()
+
+
+def close_entry_overlay(overlay) -> None:
+    """Gỡ lớp phủ sau khi trang chính đã vẽ xong."""
+    st.session_state.pop(_COVER_MAIN_PAGE, None)
+    overlay.empty()
+
+
+def require_login(overlay) -> tuple[UserAccount, UserDirectory]:
     """Tài khoản đang đăng nhập; nếu chưa đăng nhập thì vẽ màn hình đăng nhập và dừng lượt chạy."""
     settings = load_auth_settings()
     directory = get_user_directory(settings)
@@ -54,6 +94,8 @@ def require_login() -> tuple[UserAccount, UserDirectory]:
         st.stop()
 
     _render_login_screen(settings, directory)
+    st.session_state[_LOGIN_FORM_SHOWN] = True
+    overlay.empty()  # chỉ gỡ khi form đã vẽ xong, không có khoảng trống nhấp nháy
     st.stop()
     raise RuntimeError("unreachable")  # st.stop() luôn dừng lượt chạy.
 
@@ -106,6 +148,7 @@ def _sign_in(user: UserAccount) -> None:
     state[_AUTH_TOKEN_VERSION] = user.token_version
     state.pop("auth_signed_out", None)
     state.pop("auth_failed_attempts", None)
+    state[_COVER_MAIN_PAGE] = True  # giữ màn hình chờ đến khi trang chính vẽ xong
 
 
 def _try_remembered_sign_in(settings: AuthSettings, directory: UserDirectory) -> bool:
@@ -146,16 +189,7 @@ def _should_ask_browser_for_token() -> bool:
 
 
 def _render_bridge_wait_screen() -> None:
-    st.html(
-        """
-        <div class="auth-wait">
-            <div class="auth-wait-spinner"></div>
-            <div>Đang kiểm tra đăng nhập…</div>
-            <div class="auth-wait-fallback">Chưa tự đăng nhập được.
-                <a href="?login=password" target="_self">Đăng nhập bằng mật khẩu</a></div>
-        </div>
-        """
-    )
+    """Ô nhập ẩn và script cầu nối; lớp phủ chờ đã do ``open_entry_overlay()`` vẽ."""
     with st.container(key=f"{browser_cookies.BRIDGE_INPUT_KEY}_box"):
         st.text_input("remember", key=browser_cookies.BRIDGE_INPUT_KEY, label_visibility="collapsed")
     _run_script(browser_cookies.bridge_script())

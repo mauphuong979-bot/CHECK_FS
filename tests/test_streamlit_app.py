@@ -394,7 +394,7 @@ class StreamlitInterfaceTest(unittest.TestCase):
         css = fake_streamlit.markdown_calls[0][0][0]
         for selector in (
             "verdict-chip", "finding-row", "finding-diff", "st-key-top_bar", "st-key-login_box",
-            "st-key-upload_box", "auth-wait", "stSidebar", "Inter",
+            "st-key-upload_box", "checkfs_remember_bridge", "stSidebar", "Inter",
         ):
             self.assertIn(selector, css)
 

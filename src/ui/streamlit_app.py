@@ -21,7 +21,7 @@ from src.services.audit_service import (
     create_audit_outputs,
 )
 from src.ui.admin_page import render_admin_page
-from src.ui.auth_gate import render_account_menu, require_login
+from src.ui.auth_gate import close_entry_overlay, open_entry_overlay, render_account_menu, require_login
 from src.ui.branding import APP_ICON, APP_TITLE, TRANSLATION_COMPARE_URL
 from src.ui.user_guide import show_user_guide
 
@@ -36,8 +36,9 @@ def main() -> None:
         layout="wide",
         initial_sidebar_state="collapsed",
     )
+    entry_overlay = open_entry_overlay()
     _apply_styles()
-    user, directory = require_login()
+    user, directory = require_login(entry_overlay)
     _render_top_bar(user, directory)
 
     if user.is_admin:
@@ -48,6 +49,7 @@ def main() -> None:
             render_admin_page(user, directory)
     else:
         render_audit_workspace(user.username)
+    close_entry_overlay(entry_overlay)
 
 
 def _render_top_bar(user: UserAccount, directory: UserDirectory) -> None:
